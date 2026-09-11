@@ -1,1 +1,37 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VTuber Live Streams Monitor</title>
+  <style>
+    body {
+      background-color: #0a0a12;
+      color: #00ffcc;
+      font-family: 'Courier New', Courier, monospace;
+      padding: 20px;
+      margin: 0;
+    }
+    h1 {
+      color: #ff007f;
+      text-shadow: 0 0 10px rgba(255,0,127,0.5);
+    }
+    .stream-card {
+      border: 1px solid #00ffcc;
+      padding: 15px;
+      margin-bottom: 12px;
+      background: rgba(0, 255, 204, 0.05);
+      border-radius: 4px;
+    }
+  </style>
+</head>
+<body>
+  <h1>VTuber Live Streams Monitor</h1>
+  
+  <!-- バックエンドから取得したデータカードがこの中に自動挿入されます -->
+  <div id="stream-container">読み込み中...</div>
 
+  <!-- JavaScriptファイルを読み込む指定 -->
+  <script src="script.js"></script>
+</body>
+</html>
