@@ -242,7 +242,8 @@
   /* ==========================================
      0. 基本設定・状態管理
      ========================================== */
-  const GAS_URL = "https://script.google.com/macros/s/AKfycbx5sX6Ty2f-9lpPnQgVIix4AYn8vXyytfir4BYHtrtVpD_q2ZNKVJAa5iUbJxZYCihy/exec";
+  // Render上で稼働しているバックエンドAPIのベースURLへ変更
+  const API_BASE_URL = "https://vtuber-frontend.onrender.com/api";
 
   let currentViewMode = 'fav';
   let videoDataCache = { fav: null, all: null };
@@ -252,10 +253,10 @@
   let currentLiveSort = 'time';
 
   // プログレッシブ制御用フラグ（状態遷移の管理）
-  let isAllLoaded = false;       // ALLデータのバックグラウンド読み込み完了フラグ
-  let isAllLoading = false;      // ALLデータ通信中フラグ
-  let isAllFailed = false;       // ALLデータ読み込み失敗フラグ
-  let pendingSwitchToAll = false;   // ALL完了待機中フラグ
+  let isAllLoaded = false;       
+  let isAllLoading = false;      
+  let isAllFailed = false;       
+  let pendingSwitchToAll = false;   
 
   const sideMenu = document.getElementById("side-menu");
   const menuOverlay = document.getElementById("menu-overlay");
@@ -289,7 +290,8 @@
   }
 
   /**
-   * タイムアウト＆指数バックオフ付きフェッチ関数
+   * タイムアウト＆指数バックオフ付きフェッチ関数（Render REST API最適化版）
+   * GAS特有のリダイレクト（302）やopaqueレスポンス処理を排除し、標準的なCORS通信に準拠。
    */
   async function fetchWithTimeoutAndRetry(url, options = {}, retries = 3, timeoutMs = 10000, label = "") {
     const loadingTextEl = document.querySelector(".loading-text");
@@ -305,16 +307,16 @@
       try {
         const response = await fetch(url, {
           ...options,
-          signal: controller.signal
+          signal: controller.signal,
+          // RenderのAPIサーバーは標準CORSヘッダーを返す前提のためモードをcorsに明示
+          mode: 'cors' 
         });
 
         clearTimeout(timer);
 
-        if (!response.ok && response.type !== 'opaque') {
-          throw new Error(`HTTP Error: ${response.status}`);
+        if (!response.ok) {
+          throw new Error(`HTTP Error: ${response.status} ${response.statusText}`);
         }
-
-        if (response.type === 'opaque') return response;
 
         const contentType = response.headers.get("content-type");
         let jsonData;
@@ -326,8 +328,9 @@
           jsonData = JSON.parse(text);
         }
 
+        // バックエンドから明示的なエラーメッセージが返却された場合の処理
         if (jsonData && jsonData.error) {
-          throw new Error(`GAS Error: ${jsonData.error}`);
+          throw new Error(`API Error: ${jsonData.error}`);
         }
 
         return jsonData;
@@ -354,36 +357,28 @@
    */
   function toggleViewMode() {
     if (currentViewMode === 'fav') {
-      // 1. すでに取得成功している場合 -> 即時切り替え
       if (isAllLoaded && videoDataCache.all) {
         currentViewMode = 'all';
         applySwitchUI('all');
         renderCurrentModeData();
         return;
       }
-
-      // 2. 前回通信が失敗している場合 -> 即座にリトライ通信を実行
       if (isAllFailed) {
         pendingSwitchToAll = true;
         showPopup("ALLデータを再取得中です…");
         loadAllDataOnly();
         return;
       }
-
-      // 3. バックグラウンドで通信中の場合 -> ポップアップを出して待機
       if (isAllLoading) {
         pendingSwitchToAll = true;
         showPopup("ALLデータを読み込み中です。完了まで少々お待ちください…");
         return;
       }
-
-      // 4. まだリクエストすら始まっていない場合 -> 通信開始
       pendingSwitchToAll = true;
       showPopup("ALLデータを取得中です…");
       loadAllDataOnly();
 
     } else {
-      // ALL -> FAV 切り替え
       pendingSwitchToAll = false;
       hidePopup();
       currentViewMode = 'fav';
@@ -402,7 +397,8 @@
     isAllFailed = false;
 
     try {
-      const rawAll = await fetchWithTimeoutAndRetry(`${GAS_URL}?mode=all`, {}, 3, 20000, "ALL");
+      // 変更点: GASのクエリパラメータによる分岐から、REST APIのエンドポイント指定に変更
+      const rawAll = await fetchWithTimeoutAndRetry(`${API_BASE_URL}/streams?mode=all`, { method: 'GET' }, 3, 20000, "ALL");
       const cleanAll = sanitizeVideoData(rawAll, "ALL");
 
       videoDataCache.all = cleanAll;
@@ -412,7 +408,6 @@
 
       try { localStorage.setItem('safe_video_cache_all', JSON.stringify(cleanAll)); } catch (e) {}
 
-      // 切り替え待機中だった場合は画面を自動でALLに遷移
       if (pendingSwitchToAll) {
         console.log("🔄 待機中だったALL画面へ自動切替を実行します。");
         hidePopup();
@@ -434,7 +429,6 @@
       isAllLoading = false;
       isAllFailed = true;
 
-      // ユーザーがALLボタンを押して待機中だった場合、エラーポップアップを表示して4秒後にクリア
       if (pendingSwitchToAll) {
         pendingSwitchToAll = false;
         showPopup("⚠️ ALLデータの読み込みに失敗しました。もう一度タップして再試行してください。");
@@ -466,9 +460,6 @@
     }
   }
 
-  /**
-   * ポップアップ表示・非表示制御
-   */
   function showPopup(msg) {
     const popup = document.getElementById("mini-popup");
     const txt = document.getElementById("popup-text");
@@ -507,6 +498,9 @@
     }
   }
 
+  /**
+   * お気に入り登録・解除通信（POSTメソッドによるJSON送信へ変更）
+   */
   async function toggleHeart(element, channelId) {
     if (window.event) window.event.stopPropagation();
     const wasActive = element.classList.contains("active");
@@ -516,18 +510,28 @@
     element.innerText = isNowActive ? "♥" : "♡";
 
     try {
-      const url = `${GAS_URL}?action=toggleFavorite&channelId=${encodeURIComponent(channelId)}&isFavorite=${isNowActive}`;
-      await fetchWithTimeoutAndRetry(url, {}, 2, 10000, "toggleFavorite");
+      // 変更点: GASのクエリパラメータによるGETリクエストから、REST標準のPOSTリクエストへ移行
+      const url = `${API_BASE_URL}/favorites`;
+      await fetchWithTimeoutAndRetry(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          channelId: channelId,
+          isFavorite: isNowActive
+        })
+      }, 2, 10000, "toggleFavorite");
       
       if (videoDataCache.fav && !isNowActive) {
         videoDataCache.fav.videos = videoDataCache.fav.videos.filter(v => v.channelId !== channelId);
         if (currentViewMode === 'fav') renderCurrentModeData();
       }
     } catch (e) {
-      console.error("GAS同期エラー:", e);
+      console.error("バックエンド同期エラー:", e);
       element.classList.toggle("active", wasActive);
       element.innerText = wasActive ? "♥" : "♡";
-      alert("同期に失敗しました。");
+      alert("お気に入りの同期に失敗しました。ネットワーク状況を確認してください。");
     }
   }
 
@@ -673,7 +677,6 @@
     isFetchInProgress = true;
     showLoading();
     
-    // 全状態変数の完全初期化
     isAllLoaded = false;
     isAllLoading = false;
     isAllFailed = false;
@@ -689,8 +692,8 @@
 
     let hasRenderedPrimary = false;
 
-    // 1. FAV リクエスト
-    const favPromise = fetchWithTimeoutAndRetry(GAS_URL, {}, 3, 15000, "FAV")
+    // 変更点: GAS_URLからAPI_BASE_URLへの切り替え。GETメソッドを明示。
+    const favPromise = fetchWithTimeoutAndRetry(`${API_BASE_URL}/streams?mode=fav`, { method: 'GET' }, 3, 15000, "FAV")
       .then(rawFav => {
         const cleanFav = sanitizeVideoData(rawFav, "FAV");
         videoDataCache.fav = cleanFav;
@@ -706,10 +709,8 @@
         return cleanFav;
       });
 
-    // 2. ALL リクエスト（分離独立させた loadAllDataOnly を実行）
     const allPromise = loadAllDataOnly();
 
-    // バックグラウンドでの監視と全体結果判定
     try {
       const results = await Promise.allSettled([favPromise, allPromise]);
       const favResult = results[0];
@@ -719,7 +720,6 @@
         console.error("❌ FAVデータの取得に失敗しました:", favResult.reason?.message || favResult.reason);
       }
 
-      // 現在選択されている表示モードの通信が失敗してデータが全く無い場合のみ画面エラーを表示
       if (currentViewMode === 'fav' && favResult.status === "rejected" && !videoDataCache.fav) {
         throw new Error(`FAV取得失敗: ${favResult.reason?.message || "通信タイムアウト"}`);
       }
