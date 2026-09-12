@@ -1,0 +1,1042 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <link rel="stylesheet" href="style.css" />
+  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@600;700&display=swap" rel="stylesheet">
+  <link rel="apple-touch-icon" href="/app_icon.jpg">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Holo &alpha;lpha">
+  <title>Holo &alpha;lpha</title>
+</head>
+  <div id="back-to-top" onclick="scrollToTop()">▲</div>
+<body>
+  <div id="menu-btn">
+  <div class="bar"></div>
+  <div class="bar"></div>
+  <div class="bar"></div>
+  </div>
+<div id="side-menu">
+  <div class="menu-content-wrapper">
+    <div class="menu-header-box">
+        <h2>Holo &alpha;lpha</h2>
+        <div class="header-line"></div>
+    </div>
+
+    <div class="menu-item" onclick="loadVideos(true); toggleMenu(false);">🔄 情報を更新</div>
+
+    <div class="menu-label">Official / Tools</div>
+    <a href="https://hololive.hololivepro.com/" target="_blank" class="menu-item">公式サイト</a>
+    <a href="https://schedule.hololive.tv/lives" target="_blank" class="menu-item">ホロジュール</a>
+    <a href="https://hololive-fc.hololivepro.com/" target="_blank" class="menu-item">ファンクラブ</a>
+    <a href="https://shop.hololivepro.com/" target="_blank" class="menu-item">オンラインショップ</a>
+    <a href="https://holodex.net/" target="_blank" class="menu-item">Holodex</a>
+    <a href="https://www.hololyzer.net/youtube/" target="_blank" class="menu-item">Hololyzer</a>
+    <a href="https://logs.holofun.net/talent/UC5CwaMl1eIgY8h02uZw7u8A" target="_blank" class="menu-item">HoloLogs</a>
+
+    <div class="menu-label">Talents (JP)</div>
+
+    <div class="menu-accordion">
+      <div class="accordion-header" onclick="toggleAccordion(this)">0期生 <span>▼</span></div>
+      <div class="accordion-content">
+        <div class="fav-row"><a href="https://www.youtube.com/@TokinoSora" target="_blank">ときのそら</a><span class="heart-btn" onclick="toggleHeart(this, 'UCp6993wxpyDPHUpavwDFqgg')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@Robocosan" target="_blank">ロボ子さん</a><span class="heart-btn" onclick="toggleHeart(this, 'UCDqI2jOz0weumE8s7paEk6g')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@AZKi" target="_blank">AZKi</a><span class="heart-btn" onclick="toggleHeart(this, 'UC0TXe_LYZ4scaW2XMyi5_kw')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@SakuraMiko" target="_blank">さくらみこ</a><span class="heart-btn" onclick="toggleHeart(this, 'UC-hM6YJuNYVAmUWxeIr9FeA')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@HoshimachiSuisei" target="_blank">星街すいせい</a><span class="heart-btn" onclick="toggleHeart(this, 'UC5CwaMl1eIgY8h02uZw7u8A')">♡</span></div>
+      </div>
+    </div>
+
+    <div class="menu-accordion">
+      <div class="accordion-header" onclick="toggleAccordion(this)">1期生 <span>▼</span></div>
+      <div class="accordion-content">
+        <div class="fav-row"><a href="https://www.youtube.com/@AkaiHaato" target="_blank">赤井はあと</a><span class="heart-btn" onclick="toggleHeart(this, 'UC1CfXB_kRs3C-zaeTG3oGyg')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@ShirakamiFubuki" target="_blank">白上フブキ</a><span class="heart-btn" onclick="toggleHeart(this, 'UCdn5BQ06XqgXoAxIhbqw5Rg')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@NatsuiroMatsuri" target="_blank">夏色まつり</a><span class="heart-btn" onclick="toggleHeart(this, 'UCQ0UDLQCjY0rmuxCDE38FGg')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@AkiRosenthal" target="_blank">アキ・ローゼンタール</a><span class="heart-btn" onclick="toggleHeart(this, 'UCFTLzh12_nrtzqBPsTCqenA')">♡</span></div>
+      </div>
+    </div>
+
+    <div class="menu-accordion">
+      <div class="accordion-header" onclick="toggleAccordion(this)">2期生 <span>▼</span></div>
+      <div class="accordion-content">
+        <div class="fav-row"><a href="https://www.youtube.com/@MinatoAqua" target="_blank">湊あくあ</a><span class="heart-btn" onclick="toggleHeart(this, 'UC1opHUrw8rvnsadT-iGp7Cg')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@MurasakiShion" target="_blank">紫咲シオン</a><span class="heart-btn" onclick="toggleHeart(this, 'UCXTpFs_3P_1nJJY86ic5G3g')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@NakiriAyame" target="_blank">百鬼あやめ</a><span class="heart-btn" onclick="toggleHeart(this, 'UC7fk0CB07ly8oSl0aqKkqFg')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@YuzukiChoco" target="_blank">癒月ちょこ</a><span class="heart-btn" onclick="toggleHeart(this, 'UC1suqwovbL1kzsoaZgFZLKg')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@OozoraSubaru" target="_blank">大空スバル</a><span class="heart-btn" onclick="toggleHeart(this, 'UCvzGlP9oQwU--Y0r9id_jnA')">♡</span></div>
+      </div>
+    </div>
+
+    <div class="menu-accordion">
+      <div class="accordion-header" onclick="toggleAccordion(this)">ゲーマーズ <span>▼</span></div>
+      <div class="accordion-content">
+        <div class="fav-row"><a href="https://www.youtube.com/@ShirakamiFubuki" target="_blank">白上フブキ</a><span class="heart-btn" onclick="toggleHeart(this, 'UCdn5BQ06XqgXoAxIhbqw5Rg')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@OokamiMio" target="_blank">大神ミオ</a><span class="heart-btn" onclick="toggleHeart(this, 'UCp-5t9SrOQwXMU7iIjQfARg')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@NekomataOkayu" target="_blank">猫又おかゆ</a><span class="heart-btn" onclick="toggleHeart(this, 'UCvaTdHTWBGv3MKj3KVqJVCw')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@InugamiKorone" target="_blank">戌神ころね</a><span class="heart-btn" onclick="toggleHeart(this, 'UChAnqc_AY5_I3Px5dig3X1Q')">♡</span></div>
+      </div>
+    </div>
+
+    <div class="menu-accordion">
+      <div class="accordion-header" onclick="toggleAccordion(this)">3期生 <span>▼</span></div>
+      <div class="accordion-content">
+        <div class="fav-row"><a href="https://www.youtube.com/@UsadaPekora" target="_blank">兎田ぺこら</a><span class="heart-btn" onclick="toggleHeart(this, 'UC1DCedRgGHBdm81E1llLhOQ')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@ShiranuiFlare" target="_blank">不知火フレア</a><span class="heart-btn" onclick="toggleHeart(this, 'UCvInZx9h3jC2JzsIzoOebWg')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@ShiroganeNoel" target="_blank">白銀ノエル</a><span class="heart-btn" onclick="toggleHeart(this, 'UCdyqAaZDKHXg4Ahi7VENThQ')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@HoushouMarine" target="_blank">宝鐘マリン</a><span class="heart-btn" onclick="toggleHeart(this, 'UCCzUftO8KOVkV4wQG1vkUvg')">♡</span></div>
+      </div>
+    </div>
+
+    <div class="menu-accordion">
+      <div class="accordion-header" onclick="toggleAccordion(this)">4期生 <span>▼</span></div>
+      <div class="accordion-content">
+        <div class="fav-row"><a href="https://www.youtube.com/@AmaneKanata" target="_blank">天音かなた</a><span class="heart-btn" onclick="toggleHeart(this, 'UCZlDXzGoo7d44bwdNObFacg')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@TsunomakiWatame" target="_blank">角巻わため</a><span class="heart-btn" onclick="toggleHeart(this, 'UCqm3BQLlJfvkTsX_hvm0UmA')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@TokoyamiTowa" target="_blank">常闇トワ</a><span class="heart-btn" onclick="toggleHeart(this, 'UC1uv2Oq6kNxgATlCiez59hw')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@HimemoriLuna" target="_blank">姫森ルーナ</a><span class="heart-btn" onclick="toggleHeart(this, 'UCa9Y57gfeY0Zro_noHRVrnw')">♡</span></div>
+      </div>
+    </div>
+
+    <div class="menu-accordion">
+      <div class="accordion-header" onclick="toggleAccordion(this)">5期生 <span>▼</span></div>
+      <div class="accordion-content">
+        <div class="fav-row"><a href="https://www.youtube.com/@YukihanaLamy" target="_blank">雪花ラミィ</a><span class="heart-btn" onclick="toggleHeart(this, 'UCFKOVgVbGmX65RxO3EtH3iw')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@MomosuzuNene" target="_blank">桃鈴ねね</a><span class="heart-btn" onclick="toggleHeart(this, 'UCAWSyEs_Io8MtpY3m-zqILA')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@ShishiroBotan" target="_blank">獅白ぼたん</a><span class="heart-btn" onclick="toggleHeart(this, 'UCUKD-uaobj9jiqB-VXt71mA')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@OmaruPolka" target="_blank">尾丸ポルカ</a><span class="heart-btn" onclick="toggleHeart(this, 'UCK9V2B22uJYu3N7eR_BT9QA')">♡</span></div>
+      </div>
+    </div>
+
+    <div class="menu-accordion">
+      <div class="accordion-header" onclick="toggleAccordion(this)">holoX (6期生) <span>▼</span></div>
+      <div class="accordion-content">
+        <div class="fav-row"><a href="http://www.youtube.com/@LaplusDarknesss" target="_blank">ラプラス・ダークネス</a><span class="heart-btn" onclick="toggleHeart(this, 'UCENwRMx5Yh42zWpzURebzTw')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@TakaneLui" target="_blank">鷹嶺ルイ</a><span class="heart-btn" onclick="toggleHeart(this, 'UCs9_O1tRPMQTHQ-N_L6FU2g')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@HakuiKoyori" target="_blank">博衣こより</a><span class="heart-btn" onclick="toggleHeart(this, 'UC6eWCld0KwmyHFbAqK3V-Rw')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@SakamataChloe" target="_blank">沙花叉クロヱ</a><span class="heart-btn" onclick="toggleHeart(this, 'UCIBY1ollUsauvVi4hW4cumw')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@KazamaIroha" target="_blank">風真いろは</a><span class="heart-btn" onclick="toggleHeart(this, 'UC_vMYWcDjmfdpH6r4TTn1MQ')">♡</span></div>
+      </div>
+    </div>
+
+    <div class="menu-accordion">
+      <div class="accordion-header" onclick="toggleAccordion(this)">ReGLOSS <span>▼</span></div>
+      <div class="accordion-content">
+        <div class="fav-row"><a href="http://www.youtube.com/@HiodoshiAo" target="_blank">火威青</a><span class="heart-btn" onclick="toggleHeart(this, 'UCMGfV7TVTmHhEErVJg1oHBQ')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@OtonoseKanade" target="_blank">音乃瀬奏</a><span class="heart-btn" onclick="toggleHeart(this, 'UCWQtYtq9EOB4-I5P-3fh8lA')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@IchijouRirika" target="_blank">一条莉々華</a><span class="heart-btn" onclick="toggleHeart(this, 'UCtyWhCj3AqKh2dXctLkDtng')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@JuufuuteiRaden" target="_blank">儒烏風亭らでん</a><span class="heart-btn" onclick="toggleHeart(this, 'UCdXAk5MpyLD8594lm_OvtGQ')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@TodorokiHajime" target="_blank">轟はじめ</a><span class="heart-btn" onclick="toggleHeart(this, 'UC1iA6_NT4mtAcIII6ygrvCw')">♡</span></div>
+      </div>
+    </div>
+
+    <div class="menu-accordion">
+      <div class="accordion-header" onclick="toggleAccordion(this)">FLOWGLOW <span>▼</span></div>
+      <div class="accordion-content">
+        <div class="fav-row"><a href="https://www.youtube.com/@IsakiRiona" target="_blank">響咲リオナ</a><span class="heart-btn" onclick="toggleHeart(this, 'UC9LSiN9hXI55svYEBrrK-tw')">♡</span></div>
+        <div class="fav-row"><a href="http://www.youtube.com/@KoganeiNiko" target="_blank">虎金妃笑里</a><span class="heart-btn" onclick="toggleHeart(this, 'UCuI_opAVX6qbxZY-a-AxFuQ')">♡</span></div>
+        <div class="fav-row"><a href="http://www.youtube.com/@MizumiyaSu" target="_blank">水宮枢</a><span class="heart-btn" onclick="toggleHeart(this, 'UCjk2nKmHzgH5Xy-C5qYRd5A')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@RindoChihaya" target="_blank">輪堂千速</a><span class="heart-btn" onclick="toggleHeart(this, 'UCKMWFR6lAstLa7Vbf5dH7ig')">♡</span></div>
+        <div class="fav-row"><a href="http://www.youtube.com/@KikiraraVivi" target="_blank">綺々羅々ヴィヴィ</a><span class="heart-btn" onclick="toggleHeart(this, 'UCGzTVXqMQHa4AgJVJIVvtDQ')">♡</span></div>
+      </div>
+    </div>
+
+    <div class="menu-label">English / Indonesia</div>
+
+    <div class="menu-accordion">
+      <div class="accordion-header" onclick="toggleAccordion(this)">Holo EN <span>▼</span></div>
+      <div class="accordion-content">
+        <div class="fav-row"><a href="https://www.youtube.com/@MoriCalliope" target="_blank">Mori Calliope</a><span class="heart-btn" onclick="toggleHeart(this, 'UCL_qhgtOy0dy1Agp8vkySQg')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@TakanashiKiara" target="_blank">Takanashi Kiara</a><span class="heart-btn" onclick="toggleHeart(this, 'UCHsx4Hqa-1ORjQTh9TYDhww')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@NinomaeInanis" target="_blank">Ninomae Ina'nis</a><span class="heart-btn" onclick="toggleHeart(this, 'UCMwGHR0BTZuLsmjY_NT5Pwg')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@GawrGura" target="_blank">Gawr Gura</a><span class="heart-btn" onclick="toggleHeart(this, 'UCoSrY_IQQVpmIRZ9Xf-y93g')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@WatsonAmelia" target="_blank">Watson Amelia</a><span class="heart-btn" onclick="toggleHeart(this, 'UCyl1z3jo3XHR1riLFKG5UAg')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@IRyS" target="_blank">IRyS</a><span class="heart-btn" onclick="toggleHeart(this, 'UC8rcEBzJSleTkf_-agPM20g')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@CeresFauna" target="_blank">Ceres Fauna</a><span class="heart-btn" onclick="toggleHeart(this, 'UCO_aKKYxn4tvrqPjcTzZ6EQ')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@OuroKronii" target="_blank">Ouro Kronii</a><span class="heart-btn" onclick="toggleHeart(this, 'UCmbs8T6MWqUHP1tIQvSgKrg')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@NanashiMumei" target="_blank">Nanashi Mumei</a><span class="heart-btn" onclick="toggleHeart(this, 'UC3n5uGu18FoCy23ggWWp8tA')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@HakosBaelz" target="_blank">Hakos Baelz</a><span class="heart-btn" onclick="toggleHeart(this, 'UCgmPnx-EEeOrZSg5Tiw7ZRQ')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@ShioriNovella" target="_blank">Shiori Novella</a><span class="heart-btn" onclick="toggleHeart(this, 'UCgnfPPb9JI3e9A4cXHnWbyg')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@KosekiBijou" target="_blank">Koseki Bijou</a><span class="heart-btn" onclick="toggleHeart(this, 'UC9p_lqQ0FEDz327Vgf5JwqA')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@NerissaRavencroft" target="_blank">Nerissa Ravencroft</a><span class="heart-btn" onclick="toggleHeart(this, 'UC_sFNM0z0MWm9A6WlKPuMMg')">♡</span></div>
+        <div class="fav-row"><a href="http://www.youtube.com/@FUWAMOCOch" target="_blank">FUWAMOCO</a><span class="heart-btn" onclick="toggleHeart(this, 'UCt9H_RpQzhxzlyBxFqrdHqA')">♡</span></div>
+        <div class="fav-row"><a href="http://www.youtube.com/@holoen_erbloodflame" target="_blank">Elizabeth Rose Bloodflame</a><span class="heart-btn" onclick="toggleHeart(this, 'UCW5uhrG1eCBYditmhL0Ykjw')">♡</span></div>
+        <div class="fav-row"><a href="http://www.youtube.com/@holoen_gigimurin" target="_blank">Gigi Murin</a><span class="heart-btn" onclick="toggleHeart(this, 'UCDHABijvPBnJm7F-KlNME3w')">♡</span></div>
+        <div class="fav-row"><a href="http://www.youtube.com/@holoen_ceciliaimmergreen" target="_blank">Cecilia Immergreen</a><span class="heart-btn" onclick="toggleHeart(this, 'UCvN5h1ShZtc7nly3pezRayg')">♡</span></div>
+        <div class="fav-row"><a href="http://www.youtube.com/@holoen_raorapanthera" target="_blank">Raora Panthera</a><span class="heart-btn" onclick="toggleHeart(this, 'UCl69AEx4MdqMZH7Jtsm7Tig')">♡</span></div>
+      </div>
+    </div>
+
+    <div class="menu-accordion">
+      <div class="accordion-header" onclick="toggleAccordion(this)">Holo ID <span>▼</span></div>
+      <div class="accordion-content">
+        <div class="fav-row"><a href="https://www.youtube.com/@AyundaRisu" target="_blank">Ayunda Risu</a><span class="heart-btn" onclick="toggleHeart(this, 'UCOyYb1c43VlX9rc_lT6NKQw')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@MoonaHoshinova" target="_blank">Moona Hoshinova</a><span class="heart-btn" onclick="toggleHeart(this, 'UCP0BspO_AMEe3aQqqpo89Dg')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@AiraniIofifteen" target="_blank">Airani Iofifteen</a><span class="heart-btn" onclick="toggleHeart(this, 'UCAoy6rzhSf4ydcYjJw3WoVg')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@KureijiOllie" target="_blank">Kureiji Ollie</a><span class="heart-btn" onclick="toggleHeart(this, 'UCYz_5n-uDuChHtLo7My1HnQ')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@AnyaMelfissa" target="_blank">Anya Melfissa</a><span class="heart-btn" onclick="toggleHeart(this, 'UC727SQYUvx5pDDGQpTICNWg')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@PavoliaReine" target="_blank">Pavolia Reine</a><span class="heart-btn" onclick="toggleHeart(this, 'UChgTyjG-pdNvxxhdsXfHQ5Q')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@VestiaZeta" target="_blank">Vestia Zeta</a><span class="heart-btn" onclick="toggleHeart(this, 'UCTvHWSfBZgtxE4sILOaurIQ')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@KaelaKovalskia" target="_blank">Kaela Kovalskia</a><span class="heart-btn" onclick="toggleHeart(this, 'UCZLZ8Jjx_RN2CXloOmgTHVg')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@KoboKanaeru" target="_blank">Kobo Kanaeru</a><span class="heart-btn" onclick="toggleHeart(this, 'UCjLEmnpCNeisMxy134KPwWw')">♡</span></div>
+      </div>
+    </div>
+
+    <div class="menu-label">Personal / Others</div>
+
+    <div class="menu-accordion">
+      <div class="accordion-header" onclick="toggleAccordion(this)">個人勢 <span>▼</span></div>
+      <div class="accordion-content">
+        <div class="fav-row"><a href="https://www.youtube.com/@ui_shig" target="_blank">しぐれうい</a><span class="heart-btn" onclick="toggleHeart(this, 'UCt30jJgChL8qeT9VPadidSw')">♡</span></div>
+        <div class="fav-row"><a href="http://www.youtube.com/@結城さくな" target="_blank">結城さくな</a><span class="heart-btn" onclick="toggleHeart(this, 'UCrV1Hf5r8P148idjoSfrGEQ')">♡</span></div>
+        <div class="fav-row"><a href="http://www.youtube.com/@KurageuRoa" target="_blank">海月雲ろあ</a><span class="heart-btn" onclick="toggleHeart(this, 'UCLIpj4TmXviSTNE_U5WG_Ug')">♡</span></div>
+        <div class="fav-row"><a href="http://www.youtube.com/@RukaCh.雨海ルカ" target="_blank">雨海ルカ</a><span class="heart-btn" onclick="toggleHeart(this, 'UClS3cnIUM9yzsBPQzeyX_8Q')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@ksonONAIR" target="_blank">kson</a><span class="heart-btn" onclick="toggleHeart(this, 'UC9ruVYPv7yJmV0Rh0NKA-Lw')">♡</span></div>
+        <div class="fav-row"><a href="https://www.youtube.com/@AIChannel" target="_blank">Kizuna AI</a><span class="heart-btn" onclick="toggleHeart(this, 'UC4YaOt1yT-ZeyB0OmxHgolA')">♡</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+  <div id="menu-overlay" onclick="toggleMenu(false)"></div>
+
+  <div id="loading-overlay">
+    <div class="loading-text">Loading…</div>
+  </div>
+  
+  <div id="pull-refresh" style="position: fixed; top: -50px; left: 0; right: 0; height: 50px; display: flex; align-items: center; justify-content: center; background: #e0f2ff; color: #0077cc; font-size: 14px; transition: top 0.2s; z-index: 9999;">更新中…</div>
+
+  <header class="app-header">
+    <div class="header-top">
+      <h1 id="title-display">Holo&nbsp;<span class="alpha-text">&alpha;</span>lpha</h1>
+      <div id="view-mode-switch" class="mode-switch" onclick="toggleViewMode()">
+        <span id="mode-label">FAV</span>
+        <div class="switch-dot"></div>
+      </div>
+    </div>
+    <div class="tabs">
+      <button class="tab-btn" data-tab="scheduled">配信予定</button>
+      <button class="tab-btn active" data-tab="live">配信中</button>
+      <button class="tab-btn" data-tab="recent">終了済み</button>
+    </div>
+  </header>
+
+  <div id="content">
+    <div class="tab-container" id="tab-container">
+      <div id="scheduled-section"></div>
+      <div id="live-section"></div>
+      <div id="recent-section"></div>
+    </div>
+  </div>
+  <!-- 読み込み中ポップアップメッセージ -->
+  <div id="mini-popup" class="mini-popup" style="display: none;">
+    <div class="popup-content">
+      <span class="popup-spinner"></span>
+      <span id="popup-text">ALLデータを読み込み中です…</span>
+    </div>
+  </div>
+
+<script>
+  /* ==========================================
+     0. 基本設定・状態管理
+     ========================================== */
+  // Render上で稼働しているバックエンドAPIのベースURLへ変更
+  const API_BASE_URL = "https://vtuber-frontend.onrender.com/api";
+
+  let currentViewMode = 'fav';
+  let videoDataCache = { fav: null, all: null };
+  let currentTabIndex = 1;
+  let isMenuOpen = false;
+  let currentRecentSort = 'time'; 
+  let currentLiveSort = 'time';
+
+  // プログレッシブ制御用フラグ（状態遷移の管理）
+  let isAllLoaded = false;       
+  let isAllLoading = false;      
+  let isAllFailed = false;       
+  let pendingSwitchToAll = false;   
+
+  const sideMenu = document.getElementById("side-menu");
+  const menuOverlay = document.getElementById("menu-overlay");
+  const menuBtn = document.getElementById("menu-btn");
+
+  /**
+   * データ検証および破壊的データの自動除去（サニタイズ）
+   */
+  function sanitizeVideoData(data, label = "") {
+    if (!data || typeof data !== 'object') {
+      console.warn(`[${label}] 不正なレスポンス形式のため空データに補正します。`);
+      return { videos: [], ended: [] };
+    }
+
+    const rawVideos = Array.isArray(data.videos) ? data.videos : [];
+    const cleanVideos = rawVideos.filter((v) => {
+      if (!v || typeof v !== 'object') return false;
+      if (typeof v.startTime !== 'string' || !v.startTime.includes(" ")) return false;
+      if (typeof v.dateKey !== 'string' || v.dateKey.trim() === "") return false;
+      return true;
+    });
+
+    const rawEnded = Array.isArray(data.ended) ? data.ended : [];
+    const cleanEnded = rawEnded.filter(v => v && typeof v === 'object');
+
+    return {
+      ...data,
+      videos: cleanVideos,
+      ended: cleanEnded
+    };
+  }
+
+  /**
+   * タイムアウト＆指数バックオフ付きフェッチ関数（Render REST API最適化版）
+   * GAS特有のリダイレクト（302）やopaqueレスポンス処理を排除し、標準的なCORS通信に準拠。
+   */
+  async function fetchWithTimeoutAndRetry(url, options = {}, retries = 3, timeoutMs = 10000, label = "") {
+    const loadingTextEl = document.querySelector(".loading-text");
+
+    for (let attempt = 1; attempt <= retries; attempt++) {
+      if (attempt > 1 && loadingTextEl) {
+        loadingTextEl.innerText = `再接続中… (${attempt}/${retries})`;
+      }
+
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+      try {
+        const response = await fetch(url, {
+          ...options,
+          signal: controller.signal,
+          // RenderのAPIサーバーは標準CORSヘッダーを返す前提のためモードをcorsに明示
+          mode: 'cors' 
+        });
+
+        clearTimeout(timer);
+
+        if (!response.ok) {
+          throw new Error(`HTTP Error: ${response.status} ${response.statusText}`);
+        }
+
+        const contentType = response.headers.get("content-type");
+        let jsonData;
+
+        if (contentType && contentType.includes("application/json")) {
+          jsonData = await response.json();
+        } else {
+          const text = await response.text();
+          jsonData = JSON.parse(text);
+        }
+
+        // バックエンドから明示的なエラーメッセージが返却された場合の処理
+        if (jsonData && jsonData.error) {
+          throw new Error(`API Error: ${jsonData.error}`);
+        }
+
+        return jsonData;
+
+      } catch (error) {
+        clearTimeout(timer);
+        const isTimeout = error.name === 'AbortError';
+        const reason = isTimeout ? `${timeoutMs / 1000}秒タイムアウト` : error.message;
+
+        console.warn(`[Fetch ${label}] 試行 ${attempt}/${retries} 失敗: ${reason}`);
+
+        if (attempt === retries) {
+          throw new Error(`通信失敗 (${reason})`);
+        }
+
+        const backoffDelay = Math.pow(2, attempt - 1) * 1000;
+        await new Promise(resolve => setTimeout(resolve, backoffDelay));
+      }
+    }
+  }
+
+  /**
+   * モード切り替え（リトライ・状態判定対応版）
+   */
+  function toggleViewMode() {
+    if (currentViewMode === 'fav') {
+      if (isAllLoaded && videoDataCache.all) {
+        currentViewMode = 'all';
+        applySwitchUI('all');
+        renderCurrentModeData();
+        return;
+      }
+      if (isAllFailed) {
+        pendingSwitchToAll = true;
+        showPopup("ALLデータを再取得中です…");
+        loadAllDataOnly();
+        return;
+      }
+      if (isAllLoading) {
+        pendingSwitchToAll = true;
+        showPopup("ALLデータを読み込み中です。完了まで少々お待ちください…");
+        return;
+      }
+      pendingSwitchToAll = true;
+      showPopup("ALLデータを取得中です…");
+      loadAllDataOnly();
+
+    } else {
+      pendingSwitchToAll = false;
+      hidePopup();
+      currentViewMode = 'fav';
+      applySwitchUI('fav');
+      renderCurrentModeData();
+    }
+  }
+
+  /**
+   * ALLデータ単体取得・リトライ関数（非同期独立処理）
+   */
+  async function loadAllDataOnly() {
+    if (isAllLoading) return;
+
+    isAllLoading = true;
+    isAllFailed = false;
+
+    try {
+      // 変更点: GASのクエリパラメータによる分岐から、REST APIのエンドポイント指定に変更
+      const rawAll = await fetchWithTimeoutAndRetry(`${API_BASE_URL}/streams?mode=all`, { method: 'GET' }, 3, 20000, "ALL");
+      const cleanAll = sanitizeVideoData(rawAll, "ALL");
+
+      videoDataCache.all = cleanAll;
+      isAllLoaded = true;
+      isAllLoading = false;
+      isAllFailed = false;
+
+      try { localStorage.setItem('safe_video_cache_all', JSON.stringify(cleanAll)); } catch (e) {}
+
+      if (pendingSwitchToAll) {
+        console.log("🔄 待機中だったALL画面へ自動切替を実行します。");
+        hidePopup();
+        pendingSwitchToAll = false;
+        currentViewMode = 'all';
+        applySwitchUI('all');
+        renderCurrentModeData();
+        if (!document.querySelector('.tab-btn.active')) switchTab(1, null);
+        hideLoading();
+      } else if (currentViewMode === 'all') {
+        renderCurrentModeData();
+        if (!document.querySelector('.tab-btn.active')) switchTab(1, null);
+        hideLoading();
+      }
+      return cleanAll;
+
+    } catch (err) {
+      console.error("❌ ALLデータの取得に失敗しました:", err);
+      isAllLoading = false;
+      isAllFailed = true;
+
+      if (pendingSwitchToAll) {
+        pendingSwitchToAll = false;
+        showPopup("⚠️ ALLデータの読み込みに失敗しました。もう一度タップして再試行してください。");
+        setTimeout(() => {
+          if (!pendingSwitchToAll && currentViewMode === 'fav') {
+            hidePopup();
+          }
+        }, 4000);
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * スイッチおよびBODYのUI状態切り替え
+   */
+  function applySwitchUI(mode) {
+    const switchEl = document.getElementById('view-mode-switch');
+    const labelEl = document.getElementById('mode-label');
+
+    if (mode === 'all') {
+      if (switchEl) switchEl.classList.add('all-active');
+      if (labelEl) labelEl.innerText = 'ALL';
+      document.body.classList.add('mode-all');
+    } else {
+      if (switchEl) switchEl.classList.remove('all-active');
+      if (labelEl) labelEl.innerText = 'FAV';
+      document.body.classList.remove('mode-all');
+    }
+  }
+
+  function showPopup(msg) {
+    const popup = document.getElementById("mini-popup");
+    const txt = document.getElementById("popup-text");
+    if (txt) txt.innerText = msg;
+    if (popup) popup.style.display = "block";
+  }
+
+  function hidePopup() {
+    const popup = document.getElementById("mini-popup");
+    if (popup) popup.style.display = "none";
+  }
+
+  /* ==========================================
+     1. UI制御（メニュー・ハート・ローディング・リトライUI）
+     ========================================== */
+  function toggleMenu(open) {
+    isMenuOpen = open;
+    if (open) {
+      sideMenu.style.transform = "translateX(240px)";
+      menuOverlay.style.display = "block";
+      document.body.classList.add("menu-open");
+      setTimeout(() => { if (menuOverlay) menuOverlay.style.opacity = "1"; }, 15);
+    } else {
+      sideMenu.style.transform = "translateX(0)";
+      if (menuOverlay) menuOverlay.style.opacity = "0";
+      document.body.classList.remove("menu-open");
+      setTimeout(() => { if (menuOverlay) menuOverlay.style.display = "none"; }, 300);
+    }
+  }
+
+  function toggleAccordion(header) {
+    header.classList.toggle("active");
+    const content = header.nextElementSibling;
+    if (content) {
+      content.style.display = content.style.display === "block" ? "none" : "block";
+    }
+  }
+
+  /**
+   * お気に入り登録・解除通信（POSTメソッドによるJSON送信へ変更）
+   */
+  async function toggleHeart(element, channelId) {
+    if (window.event) window.event.stopPropagation();
+    const wasActive = element.classList.contains("active");
+    const isNowActive = !wasActive;
+
+    element.classList.toggle("active", isNowActive);
+    element.innerText = isNowActive ? "♥" : "♡";
+
+    try {
+      // 変更点: GASのクエリパラメータによるGETリクエストから、REST標準のPOSTリクエストへ移行
+      const url = `${API_BASE_URL}/favorites`;
+      await fetchWithTimeoutAndRetry(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          channelId: channelId,
+          isFavorite: isNowActive
+        })
+      }, 2, 10000, "toggleFavorite");
+      
+      if (videoDataCache.fav && !isNowActive) {
+        videoDataCache.fav.videos = videoDataCache.fav.videos.filter(v => v.channelId !== channelId);
+        if (currentViewMode === 'fav') renderCurrentModeData();
+      }
+    } catch (e) {
+      console.error("バックエンド同期エラー:", e);
+      element.classList.toggle("active", wasActive);
+      element.innerText = wasActive ? "♥" : "♡";
+      alert("お気に入りの同期に失敗しました。ネットワーク状況を確認してください。");
+    }
+  }
+
+  function showLoading() { 
+    const l = document.getElementById("loading-overlay"); 
+    const loadingTextEl = document.querySelector(".loading-text");
+    const retryContainer = document.getElementById("retry-ui-container");
+    if (retryContainer) retryContainer.remove();
+    
+    if (loadingTextEl) {
+      loadingTextEl.style.display = "block";
+      loadingTextEl.innerText = "データ読み込み中…";
+    }
+    const spinner = document.querySelector(".spinner, .loading-spinner");
+    if (spinner) spinner.style.display = "block";
+    if (l) l.style.display = "flex"; 
+  }
+  
+  function hideLoading() {  
+    const l = document.getElementById("loading-overlay");  
+    const retryContainer = document.getElementById("retry-ui-container");
+    if (retryContainer) retryContainer.remove();
+    if (l) l.style.display = "none";  
+  }
+
+  function showRetryScreen(errorMessage) {
+    const l = document.getElementById("loading-overlay");
+    if (!l) return;
+
+    const spinner = document.querySelector(".spinner, .loading-spinner");
+    if (spinner) spinner.style.display = "none";
+    const loadingTextEl = document.querySelector(".loading-text");
+    if (loadingTextEl) loadingTextEl.style.display = "none";
+
+    let retryContainer = document.getElementById("retry-ui-container");
+    if (retryContainer) retryContainer.remove();
+
+    retryContainer = document.createElement("div");
+    retryContainer.id = "retry-ui-container";
+    retryContainer.style.textAlign = "center";
+    retryContainer.style.padding = "20px";
+    retryContainer.style.color = "#ffffff";
+
+    retryContainer.innerHTML = `
+      <div style="font-size: 40px; margin-bottom: 10px;">⚠️</div>
+      <div style="font-size: 16px; font-weight: bold; margin-bottom: 8px;">通信エラー</div>
+      <div style="font-size: 13px; color: #ccc; margin-bottom: 20px; word-break: break-all; max-width: 280px; line-height: 1.4;">
+        ${errorMessage || "データの取得に失敗しました。"}
+      </div>
+      <div style="display: flex; gap: 10px; justify-content: center; flex-wrap: wrap;">
+        <button id="retry-action-btn" style="background-color: #ff4b4b; color: #ffffff; border: none; padding: 10px 20px; font-size: 14px; font-weight: bold; border-radius: 20px; cursor: pointer;">再試行する</button>
+        <button id="safe-mode-btn" style="background-color: #333333; color: #00ffff; border: 1px solid #00ffff; padding: 10px 20px; font-size: 14px; font-weight: bold; border-radius: 20px; cursor: pointer;">🛡️ セーフモードで起動</button>
+      </div>
+    `;
+
+    l.appendChild(retryContainer);
+    l.style.display = "flex";
+
+    document.getElementById("retry-action-btn")?.addEventListener("click", () => loadVideos(true));
+    document.getElementById("safe-mode-btn")?.addEventListener("click", () => executeSafeMode());
+  }
+
+  function executeSafeMode() {
+    try {
+      const savedFav = localStorage.getItem('safe_video_cache_fav');
+      const savedAll = localStorage.getItem('safe_video_cache_all');
+
+      videoDataCache.fav = savedFav ? sanitizeVideoData(JSON.parse(savedFav), "SAFE_FAV") : { videos: [], ended: [] };
+      videoDataCache.all = savedAll ? sanitizeVideoData(JSON.parse(savedAll), "SAFE_ALL") : { videos: [], ended: [] };
+
+      renderCurrentModeData();
+      switchTab(1, null);
+      hideLoading();
+    } catch (err) {
+      videoDataCache.fav = { videos: [], ended: [] };
+      videoDataCache.all = { videos: [], ended: [] };
+      renderCurrentModeData();
+      switchTab(1, null);
+      hideLoading();
+    }
+  }
+
+  /* ==========================================
+     2. タブ・スワイプ・スクロール
+     ========================================== */
+  function switchTab(index, direction = null) {
+    currentTabIndex = index;
+    const sections = ["scheduled-section", "live-section", "recent-section"];
+    const btns = document.querySelectorAll(".tab-btn");
+
+    btns.forEach((btn, i) => btn.classList.toggle("active", i === index));
+    sections.forEach((id, i) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      if (i === index) {
+        el.style.display = "block";
+        if (direction) {
+          const anim = direction === 'right' ? 'slide-from-right' : 'slide-from-left';
+          el.classList.remove('slide-from-right', 'slide-from-left');
+          void el.offsetWidth;
+          el.classList.add(anim);
+        }
+      } else {
+        el.style.display = "none";
+      }
+    });
+    window.scrollTo({ top: 0, behavior: 'instant' });
+  }
+
+  let touchStartX = 0, touchStartY = 0, pullStartY = 0, isPulling = false;
+  document.addEventListener('touchstart', (e) => {
+    if (isMenuOpen) return;
+    touchStartX = e.touches[0].clientX;
+    touchStartY = e.touches[0].clientY;
+    if (window.scrollY <= 0) { pullStartY = touchStartY; isPulling = true; }
+  }, { passive: true });
+
+  document.addEventListener('touchend', (e) => {
+    if (isMenuOpen) return;
+    const dx = e.changedTouches[0].clientX - touchStartX;
+    const dy = e.changedTouches[0].clientY - touchStartY;
+    if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 30) {
+      if (dx > 0 && currentTabIndex > 0) switchTab(currentTabIndex - 1, 'left');
+      else if (dx > 0) toggleMenu(true);
+      else if (dx < 0 && currentTabIndex < 2) switchTab(currentTabIndex + 1, 'right');
+    } else if (isPulling && dy > 180) {
+      loadVideos(true);
+    }
+    isPulling = false;
+  }, { passive: true });
+
+  /* ==========================================
+     3. データ取得（全体ロード統括関数）
+     ========================================== */
+  let isFetchInProgress = false;
+
+  async function loadVideos(forceRefresh = false) {
+    if (isFetchInProgress) {
+      console.warn("⚠️ すでに通信処理が実行中のため、重複呼び出しをスキップしました。");
+      return;
+    }
+
+    isFetchInProgress = true;
+    showLoading();
+    
+    isAllLoaded = false;
+    isAllLoading = false;
+    isAllFailed = false;
+    pendingSwitchToAll = false;
+    hidePopup();
+
+    if (forceRefresh) {
+      videoDataCache.fav = null;
+      videoDataCache.all = null;
+    }
+
+    console.log("🚀 FAV 先行読み込み ＆ ALL バックグラウンド非同期取得を開始します...");
+
+    let hasRenderedPrimary = false;
+
+    // 変更点: GAS_URLからAPI_BASE_URLへの切り替え。GETメソッドを明示。
+    const favPromise = fetchWithTimeoutAndRetry(`${API_BASE_URL}/streams?mode=fav`, { method: 'GET' }, 3, 15000, "FAV")
+      .then(rawFav => {
+        const cleanFav = sanitizeVideoData(rawFav, "FAV");
+        videoDataCache.fav = cleanFav;
+        try { localStorage.setItem('safe_video_cache_fav', JSON.stringify(cleanFav)); } catch (e) {}
+
+        if (currentViewMode === 'fav' && !hasRenderedPrimary) {
+          hasRenderedPrimary = true;
+          renderCurrentModeData();
+          if (forceRefresh || !document.querySelector('.tab-btn.active')) switchTab(1, null);
+          hideLoading();
+          console.log("⚡ FAV データを最速表示しました。");
+        }
+        return cleanFav;
+      });
+
+    const allPromise = loadAllDataOnly();
+
+    try {
+      const results = await Promise.allSettled([favPromise, allPromise]);
+      const favResult = results[0];
+      const allResult = results[1];
+
+      if (favResult.status === "rejected") {
+        console.error("❌ FAVデータの取得に失敗しました:", favResult.reason?.message || favResult.reason);
+      }
+
+      if (currentViewMode === 'fav' && favResult.status === "rejected" && !videoDataCache.fav) {
+        throw new Error(`FAV取得失敗: ${favResult.reason?.message || "通信タイムアウト"}`);
+      }
+      if (currentViewMode === 'all' && allResult.status === "rejected" && !videoDataCache.all) {
+        throw new Error(`ALL取得失敗: ${allResult.reason?.message || "通信タイムアウト"}`);
+      }
+
+      if (favResult.status === "fulfilled" && allResult.status === "fulfilled") {
+        console.log("✅ 全通信処理（FAV / ALL）が正常終了しました。");
+      } else {
+        console.warn("⚠️ 一部の通信処理が失敗、または不完全な状態で完了しました。");
+      }
+
+    } catch (e) {
+      console.error("Load Error:", e);
+      showRetryScreen(e.message);
+    } finally {
+      isFetchInProgress = false;
+    }
+  }
+
+  function renderCurrentModeData() {
+    const data = videoDataCache[currentViewMode];
+    if (!data) return;
+
+    const all = data.videos || [];
+    const live = all.filter(v => v && v.isLive === true);
+    let ended = (data.ended && data.ended.length > 0) ? data.ended : all.filter(v => v && v.isEnded === true);
+
+    const maxId = findGlobalMaxLiveViewersId(live); 
+
+    renderScheduled(all.filter(v => v && !v.isLive && !v.isEnded), maxId);
+    renderLive(live, maxId);
+    renderRecent(ended, maxId);
+  }
+
+  function findGlobalMaxLiveViewersId(all) {
+    const v = all.filter(x => x && x.liveViewersFormatted);
+    if (!v.length) return null;
+    
+    return v.reduce((max, x) => {
+      const n = parseInt(x.liveViewersFormatted.replace(/,/g, ""));
+      return n > max.n ? { id: x.videoId, n } : max;
+    }, { id: null, n: -1 }).id;
+  }
+
+  function createCard(video, maxLiveViewersId) {
+    if (!video) return "";
+    const isMax = video.videoId === maxLiveViewersId;
+    const isUpcoming = !video.isLive && !video.isEnded && !video.isDeleted;
+
+    const labels = [
+      video.isLive ? `<div class="label-live">配信中</div>` : "",
+      isUpcoming ? `<div class="label-upcoming">配信予定</div>` : "",
+      video.isEnded ? `<div class="label-ended">終了</div>` : "",
+      video.isDeleted ? `<div class="label-deleted">削除</div>` : ""
+    ].join("");
+
+    const durationHtml = (video.isEnded && video.durationLabel) ? `<div class="duration-badge">${video.durationLabel}</div>` : "";
+    const ownerIconPC = video.channelIcon ? `<img src="${video.channelIcon}" class="owner-icon-pc" title="${video.channelTitle || ''}" alt="">` : "";
+    const ownerIconSP = video.channelIcon ? `<img src="${video.channelIcon}" class="owner-icon-sp" alt="">` : "";
+
+    const guestIcons = (video.guests || []).map(guest => {
+      const name = (typeof guest === 'object' && guest !== null) ? guest.name : guest;
+      const icon = (typeof guest === 'object' && guest !== null) ? guest.icon : "";
+      if (!icon) return `<span class="guest-name-text">${name || "不明"}</span>`; 
+      return `<img src="${icon}" class="guest-icon" title="${name || '不明'}" alt="">`;
+    }).join("");
+
+    const guestHtml = `<div class="card-guests">${ownerIconPC}${guestIcons}</div>`;
+    const keywordHtml = video.keyword ? `<div class="card-keyword">${video.keyword}</div>` : "";
+
+    let viewersHtml = "";
+    if (video.isLive && video.liveViewersFormatted) {
+      viewersHtml = `<div class="live-viewers ${isMax ? "max-live" : ""}">同接：${video.liveViewersFormatted}</div>`;
+    } else if (video.isEnded && video.liveViewersFormatted) {
+      viewersHtml = `<div class="live-viewers ended-stats">最大同接： ${video.liveViewersFormatted}</div>`;
+    }
+
+    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    const initialThumb = isMobile 
+      ? `https://i.ytimg.com/vi/${video.videoId}/hqdefault.jpg`
+      : `https://i.ytimg.com/vi/${video.videoId}/maxresdefault.jpg`;
+
+    let formattedTime = video.startTime || "";
+    if (video.startTimeRaw) {
+      const d = new Date(video.startTimeRaw);
+      if (!isNaN(d.getTime())) {
+        const month = String(d.getMonth() + 1).padStart(2, '0');
+        const date = String(d.getDate()).padStart(2, '0');
+        const hours = String(d.getHours()).padStart(2, '0');
+        const minutes = String(d.getMinutes()).padStart(2, '0');
+        const weekdays = ["日", "月", "火", "水", "木", "金", "土"];
+        const weekdayStr = weekdays[d.getDay()];
+
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const targetDate = new Date(d);
+        targetDate.setHours(0, 0, 0, 0);
+        const diffDays = Math.round((targetDate - today) / 86400000);
+
+        let relativeLabel = "";
+        if (diffDays === 1) relativeLabel = " 明日";
+        else if (diffDays === 2) relativeLabel = " 明後日";
+
+        formattedTime = `${month}/${date}(${weekdayStr})${relativeLabel} ${hours}:${minutes}`;
+      }
+    }
+
+    return `
+      <a href="${video.videoUrl || '#'}" class="card ${video.liveViewersFormatted ? 'has-viewers' : ''}" target="_blank">
+        <div class="card-thumb">
+          <img src="${initialThumb}" alt="" loading="lazy" decoding="async"
+                onerror="if (this.src.includes('maxresdefault')) { this.src='https://i.ytimg.com/vi/${video.videoId}/hqdefault.jpg'; }">
+          ${labels}
+          ${durationHtml}
+        </div>
+        <div class="card-body">
+          <div class="card-time">${formattedTime}</div>
+          <div class="card-channel">
+            ${ownerIconSP}<span>${video.channelTitle || 'チャンネル不明'}</span>
+          </div>
+          <div class="card-title">${video.title || 'タイトル不明'}</div>
+          ${guestHtml}
+          ${keywordHtml}
+          ${viewersHtml}
+        </div>
+      </a>`;
+  }
+
+  function renderScheduled(v, m) {
+    const root = document.getElementById("scheduled-section");
+    if (!root) return;
+    if (!v.length) { root.innerHTML = '<p class="empty-msg">予定はありません</p>'; return; }
+
+    const byDate = groupByDate(v);
+    const htmlBuffer = [];
+
+    Object.keys(byDate).sort().forEach((date, i) => {
+      htmlBuffer.push(`<div class="date-group ${i === 0 ? 'first-group' : ''}">`);
+      htmlBuffer.push(`<div class="date-band">${date}(${getWeekday(date)}) ${getDayLabel(date)}</div>`);
+      
+      const byHour = groupByHour(byDate[date]);
+      Object.keys(byHour).sort((a,b) => a - b).forEach(hour => {
+        htmlBuffer.push(`<div class="hour-band">${hour}:00～</div>`);
+        htmlBuffer.push(`<div class="cards grid">${byHour[hour].map(x => createCard(x, m)).join("")}</div>`);
+      });
+      htmlBuffer.push(`</div>`);
+    });
+
+    root.innerHTML = htmlBuffer.join("");
+  }
+
+  function renderLive(v, m) {
+    const root = document.getElementById("live-section");
+    if (!root) return;
+    if (!v.length) { root.innerHTML = '<p class="empty-msg">配信中はありません</p>'; return; }
+  
+    if (currentLiveSort === 'viewers') {
+      v.sort((a, b) => {
+        const vA = parseInt(a.liveViewersFormatted?.replace(/,/g, "") || 0);
+        const vB = parseInt(b.liveViewersFormatted?.replace(/,/g, "") || 0);
+        return vB - vA;
+      });
+    } else {
+      v.sort((a, b) => new Date(b.startTimeRaw) - new Date(a.startTimeRaw));
+    }
+  
+    const btnLabel = currentLiveSort === 'time' ? '🕒 開始順' : '🔥 同接順';
+  
+    root.innerHTML = `
+      <div class="date-group first-group">
+        <div class="date-band live-header">
+          <span>LIVE NOW</span>
+          <div class="live-sort-controls">
+            <button class="ls-toggle-btn active" onclick="toggleLiveSort()">
+              ${btnLabel}
+            </button>
+          </div>
+        </div>
+        <div class="cards grid">${v.map(x => createCard(x, m)).join("")}</div>
+      </div>
+    `;
+  }
+  
+  function toggleLiveSort() {
+    currentLiveSort = (currentLiveSort === 'time') ? 'viewers' : 'time';
+    if (videoDataCache[currentViewMode]) {
+      const data = videoDataCache[currentViewMode];
+      const live = (data.videos || []).filter(v => v && v.isLive === true);
+      const maxId = findGlobalMaxLiveViewersId(live);
+      renderLive(live, maxId);
+    }
+  }
+
+  function toggleRecentSort() {
+    currentRecentSort = (currentRecentSort === 'time') ? 'viewers' : 'time';
+    if (videoDataCache[currentViewMode]) {
+      const data = videoDataCache[currentViewMode];
+      const all = data.videos || [];
+      const ended = (data.ended && data.ended.length > 0) ? data.ended : all.filter(v => v && v.isEnded === true);
+      const maxId = findGlobalMaxLiveViewersId(ended);
+      renderRecent(ended, maxId);
+    }
+  }
+
+  function renderRecent(endedList, maxLiveViewersId) {
+    const container = document.getElementById("recent-section");
+    if (!container) return;
+
+    const rawList = endedList || [];
+    if (rawList.length === 0) {
+      container.innerHTML = '<p class="empty-msg">終了した配信はありません</p>';
+      return;
+    }
+
+    const v = [...rawList];
+    if (currentRecentSort === 'viewers') {
+      v.sort((a, b) => {
+        const vA = parseInt(a.liveViewersFormatted?.replace(/,/g, "") || 0, 10);
+        const vB = parseInt(b.liveViewersFormatted?.replace(/,/g, "") || 0, 10);
+        return vB - vA;
+      });
+    } else {
+      v.sort((a, b) => new Date(b.startTimeRaw) - new Date(a.startTimeRaw));
+    }
+
+    const btnLabel = currentRecentSort === 'time' ? '🕒 開始順' : '🔥 同接順';
+
+    const htmlBuffer = [];
+    htmlBuffer.push(`
+      <div class="date-group first-group">
+        <div class="date-band live-header">
+          <span>終了した配信 (${v.length}件)</span>
+          <div class="live-sort-controls">
+            <button class="ls-toggle-btn active" onclick="toggleRecentSort()">${btnLabel}</button>
+          </div>
+        </div>
+    `);
+
+    if (currentRecentSort === 'viewers') {
+      htmlBuffer.push(`<div class="cards grid">${v.map(x => createCard(x, maxLiveViewersId)).join("")}</div></div>`);
+    } else {
+      const byDate = groupByDate(v);
+      Object.keys(byDate).sort().reverse().forEach((date) => {
+        htmlBuffer.push(`<div class="date-group"><div class="date-band">${date}(${getWeekday(date)}) ${getDayLabel(date)}</div>`);
+        const byHour = groupByHour(byDate[date]);
+        Object.keys(byHour).sort((a, b) => b - a).forEach(hour => {
+          htmlBuffer.push(`<div class="hour-band">${hour}:00～</div><div class="cards grid">${byHour[hour].map(x => createCard(x, maxLiveViewersId)).join("")}</div>`);
+        });
+        htmlBuffer.push(`</div>`);
+      });
+      htmlBuffer.push(`</div>`);
+    }
+
+    container.innerHTML = htmlBuffer.join("");
+  }
+
+  function groupByDate(v) { 
+    const m = {}; 
+    if (!Array.isArray(v)) return m;
+    v.forEach(x => { 
+      if (!x || typeof x.dateKey !== 'string') return;
+      if (!m[x.dateKey]) m[x.dateKey] = []; 
+      m[x.dateKey].push(x); 
+    }); 
+    return m; 
+  }
+
+  function groupByHour(v) { 
+    const m = {}; 
+    if (!Array.isArray(v)) return m;
+
+    v.forEach(x => { 
+      if (!x || typeof x.startTime !== 'string' || !x.startTime.includes(" ")) return;
+      const spaceParts = x.startTime.split(" ");
+      if (spaceParts.length < 2 || !spaceParts[1]) return;
+      const timeParts = spaceParts[1].split(":");
+      if (timeParts.length === 0 || !timeParts[0]) return;
+
+      const h = timeParts[0]; 
+      if (!m[h]) m[h] = []; 
+      m[h].push(x); 
+    }); 
+
+    return m; 
+  }
+
+  function getWeekday(k) { return ["日","月","火","水","木","金","土"][new Date(`${new Date().getFullYear()}/${k} 00:00`).getDay()]; }
+
+  function getDayLabel(k) { 
+    const t=new Date(); t.setHours(0,0,0,0);
+    const d=Math.round((new Date(`${t.getFullYear()}/${k} 00:00`)-t)/86400000);
+    return d===0?"-今日-":d===1?"-明日-":d===2?"-明後日-":"";
+  }
+
+  document.querySelectorAll(".tab-btn").forEach((b, i) => {
+    b.addEventListener("click", () => switchTab(i, i > currentTabIndex ? 'right' : 'left'));
+  });
+
+  if (menuBtn) menuBtn.addEventListener("click", () => toggleMenu(!isMenuOpen));
+  if (menuOverlay) menuOverlay.addEventListener("click", () => toggleMenu(false));
+  const titleBtn = document.getElementById("title-btn");
+  if (titleBtn) titleBtn.addEventListener("click", () => loadVideos(true));
+
+  window.addEventListener("DOMContentLoaded", () => {
+    if (currentViewMode === 'all') {
+      document.body.classList.add('mode-all');
+    } else {
+      document.body.classList.remove('mode-all');
+    }
+    loadVideos(true);
+  });
+
+  function scrollToTop() {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+</script>
+</body>
+</html>
