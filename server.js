@@ -45,8 +45,16 @@ function saveFavorites(favs) {
 }
 
 /* ==========================================
-   API エンドポイント
+    API エンドポイント
    ========================================== */
+
+/**
+ * GET /
+ * トップアクセス時のウェルカムメッセージ
+ */
+app.get('/', (req, res) => {
+  res.send('VTuber Monitor Backend is running successfully! 🚀');
+});
 
 /**
  * GET /api/streams
@@ -130,7 +138,9 @@ app.post('/api/favorites', (req, res) => {
   res.json({ success: true, channelId, isFavorite: favorites[channelId] });
 });
 
-// サーバー起動
+/* ==========================================
+    サーバー起動
+   ========================================== */
 app.listen(PORT, () => {
   console.log(`🚀 バックエンドサーバーがポート ${PORT} で起動しました。`);
 });
