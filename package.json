@@ -4,8 +4,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node --watch src/server.js",
-    "start": "node src/server.js",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:create": "wrangler d1 create hololive-live-monitor",
+    "db:migrate": "wrangler d1 migrations apply hololive-live-monitor --remote",
     "test": "node --test --test-isolation=none"
   },
   "engines": {
@@ -14,5 +16,8 @@
   "dependencies": {
     "googleapis": "^171.4.0",
     "pg": "^8.23.0"
+  },
+  "devDependencies": {
+    "wrangler": "^4.131.1"
   }
 }
