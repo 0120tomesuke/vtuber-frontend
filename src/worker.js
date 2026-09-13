@@ -504,6 +504,32 @@ async function resendSend(env, payload) {
   const detail = (await response.text()).replaceAll(/\s+/g, ' ').slice(0, 500);
   throw new Error(`Resend failed: ${response.status}${detail ? ` ${detail}` : ''}`);
 }
+function gasRelayReady(env) {
+  return Boolean(env.GAS_MAIL_RELAY_URL && env.GAS_MAIL_RELAY_TOKEN);
+}
+async function gasRelaySend(env, { senderName, recipient, subject, html: htmlBody }) {
+  const response = await fetch(env.GAS_MAIL_RELAY_URL, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      token: env.GAS_MAIL_RELAY_TOKEN,
+      senderName,
+      recipient,
+      subject,
+      html: htmlBody
+    })
+  });
+  const detail = await response.text();
+  if (!response.ok) throw new Error(`GAS mail relay failed: ${response.status} ${detail.slice(0, 500)}`);
+  let result;
+  try {
+    result = JSON.parse(detail);
+  } catch {
+    throw new Error(`GAS mail relay returned invalid JSON: ${detail.slice(0, 500)}`);
+  }
+  if (!result.ok) throw new Error(`GAS mail relay rejected delivery: ${String(result.error || 'unknown error').slice(0, 500)}`);
+  return true;
+}
 function base64Utf8(value) {
   const bytes = new TextEncoder().encode(String(value || ''));
   let binary = '';
@@ -556,8 +582,10 @@ async function gmailSend(env, { senderName, recipient, subject, html: htmlBody }
   return true;
 }
 async function sendMail(env, { senderName, recipient, subject, html: htmlBody }) {
-  // Gmail is free for this personal-notification workload. Keep Resend as a
-  // fallback so existing configurations do not suddenly stop working.
+  // The GAS relay uses the owner's MailApp authorization and therefore avoids
+  // the seven-day refresh-token expiry of an unpublished Gmail OAuth app.
+  if (gasRelayReady(env)) return gasRelaySend(env, { senderName, recipient, subject, html: htmlBody });
+  // Keep previous providers as fallbacks until the relay is configured.
   if (gmailReady(env)) return gmailSend(env, { senderName, recipient, subject, html: htmlBody });
   if (env.RESEND_API_KEY && env.EMAIL_FROM) return resendSend(env, { from: `${senderName} <${env.EMAIL_FROM}>`, to: [recipient], subject, html: htmlBody });
   return false;

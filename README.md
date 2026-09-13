@@ -2,7 +2,7 @@
 
 このアプリはCloudflare Workers、D1、Cronで動作します。常駐NodeサーバーやRenderは使いません。Cronは1分ごとに配信情報を同期します。
 
-Holodexを主データ源にし、登録チャンネルのYouTube RSSとYouTube Data APIで取りこぼしを補完します。前回の状態をD1に保存するため、配信終了、タイトル・開始時刻変更、通知済み判定をWorkerの実行をまたいで維持します。メール通知はResendを設定した場合だけ有効になります。
+Holodexを主データ源にし、登録チャンネルのYouTube RSSとYouTube Data APIで取りこぼしを補完します。前回の状態をD1に保存するため、配信終了、タイトル・開始時刻変更、通知済み判定をWorkerの実行をまたいで維持します。通知メールは無料のGAS中継、Gmail API、Resendの順に選択できます。
 
 ## 初回セットアップ
 
@@ -16,7 +16,9 @@ Holodexを主データ源にし、登録チャンネルのYouTube RSSとYouTube 
 
    補完機能: `YOUTUBE_API_KEY`
 
-   メール通知（無料・推奨）: `GMAIL_OAUTH_CLIENT_ID`, `GMAIL_OAUTH_CLIENT_SECRET`, `GMAIL_OAUTH_REFRESH_TOKEN`, `GMAIL_SENDER_EMAIL`, `NOTIFICATION_EMAIL`
+   メール通知（無料・恒久運用）: `GAS_MAIL_RELAY_URL`, `GAS_MAIL_RELAY_TOKEN`, `NOTIFICATION_EMAIL`
+
+   メール通知（Gmail API・テスト用）: `GMAIL_OAUTH_CLIENT_ID`, `GMAIL_OAUTH_CLIENT_SECRET`, `GMAIL_OAUTH_REFRESH_TOKEN`, `GMAIL_SENDER_EMAIL`, `NOTIFICATION_EMAIL`
 
    メール通知（Resend）: `RESEND_API_KEY`, `EMAIL_FROM`, `NOTIFICATION_EMAIL`
 
@@ -27,9 +29,25 @@ Holodexを主データ源にし、登録チャンネルのYouTube RSSとYouTube 
 
 無料D1の枠・Cloudflareの利用上限はアカウントの最新規約に従います。APIキーはGitHubへ絶対にコミットしないでください。
 
-## Gmail APIで無料送信する
+## GAS MailApp中継で無料・恒久送信する
 
-Gmail APIを設定すると、独自ドメインなしで任意のGmailアドレスへ通知できます。Gmail APIが設定済みの場合はResendより優先されます。
+Cloudflareは監視・通知判定だけを担当し、メール送信だけをGAS Webアプリへ委譲します。GASは通知発生時にだけ実行されるため、定期監視の実行回数や実行時間には影響しません。個人GmailのMailAppは送信先100件/日までです。
+
+1. Apps Scriptで新しいプロジェクトを作成し、[`gas/mail-relay.gs`](gas/mail-relay.gs) の内容を貼り付ける。
+2. プロジェクト設定の **スクリプト プロパティ** に `MAIL_RELAY_TOKEN` を追加する。値は十分に長いランダム文字列にする。
+3. **デプロイ > 新しいデプロイ > ウェブアプリ** を選び、次を設定する。
+
+   - 実行するユーザー: **自分**
+   - アクセスできるユーザー: **全員**
+
+4. 初回承認後、末尾が `/exec` のURLをコピーする。
+5. Cloudflare WorkerのSecretsに `GAS_MAIL_RELAY_URL` と `GAS_MAIL_RELAY_TOKEN` を登録する。前者には `/exec` URL、後者には手順2と同じトークンを入れる。
+
+トークンが一致しないリクエストはGAS側で拒否されるため、Webアプリを公開しても第三者がメール送信に利用することはできません。GAS中継が設定されると、Gmail APIとResendより優先されます。
+
+## Gmail APIで無料送信する（テスト用）
+
+Gmail APIを設定すると、独自ドメインなしで任意のGmailアドレスへ通知できます。ただしOAuthアプリがテスト状態では更新トークンが約7日で失効します。恒久運用には所有確認済み独自ドメインと本番公開が必要です。GAS中継を使えない場合だけ利用してください。
 
 1. Google Cloud Consoleで既存プロジェクトの **Gmail API** を有効化する。
 2. **OAuth同意画面** を設定する。個人専用アプリでも、常時運用前には公開ステータスを **本番** に変更する。テスト状態では更新トークンが7日で失効する。
