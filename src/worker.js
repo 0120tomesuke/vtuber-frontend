@@ -1,5 +1,8 @@
 const TOKYO = 'Asia/Tokyo';
 const HOLODEX = 'https://holodex.net/api/v2';
+// Workers on the free plan limits the number of subrequests per invocation.
+// RSS is a supplemental source, so scan it in small rotating batches.
+const RSS_CHANNELS_PER_SCAN = 20;
 
 const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json; charset=utf-8' } });
 const esc = (value) => String(value || '').replaceAll('\\', '\\\\').replaceAll(';', '\\;').replaceAll(',', '\\,').replaceAll('\n', '\\n');
@@ -91,6 +94,11 @@ function youtubeInterval(now) { const hour = tokyoHour(now); return hour >= 2 &&
 function monitorInterval(now) { const hour = tokyoHour(now); return hour >= 10 || hour < 2 ? 55_000 : 15 * 60_000; }
 async function mapLimit(values, limit, fn) { let cursor = 0; await Promise.all(Array.from({ length: Math.min(limit, values.length) }, async () => { while (cursor < values.length) { const index = cursor++; await fn(values[index]); } })); }
 async function rssIds(channelIds) { const ids = new Set(); await mapLimit(channelIds, 15, async (channelId) => { try { const response = await fetch(`https://www.youtube.com/feeds/videos.xml?channel_id=${encodeURIComponent(channelId)}`); if (!response.ok) return; for (const match of (await response.text()).matchAll(/<yt:videoId>([a-zA-Z0-9_-]{11})<\/yt:videoId>/g)) ids.add(match[1]); } catch { /* A single RSS failure is non-fatal. */ } }); return [...ids]; }
+function rotatingBatch(values, cursor, size) {
+  if (!values.length) return [];
+  const start = ((Number(cursor) || 0) % values.length + values.length) % values.length;
+  return Array.from({ length: Math.min(size, values.length) }, (_, index) => values[(start + index) % values.length]);
+}
 async function youtubeDetails(env, ids) { if (!env.YOUTUBE_API_KEY || !ids.length) return []; const chunks = Array.from({ length: Math.ceil(ids.length / 50) }, (_, i) => ids.slice(i * 50, i * 50 + 50)); const cutoff = Date.now() + 14 * 86400000; const results = await Promise.all(chunks.map(async (chunk) => { const query = new URLSearchParams({ part: 'snippet,liveStreamingDetails', id: chunk.join(','), key: env.YOUTUBE_API_KEY }); const response = await fetch(`https://www.googleapis.com/youtube/v3/videos?${query}`); if (!response.ok) throw new Error(`YouTube API failed: ${response.status}`); return (await response.json()).items || []; })); return results.flat().flatMap((item) => { const details = item.liveStreamingDetails; const live = item.snippet?.liveBroadcastContent === 'live'; const ended = item.snippet?.liveBroadcastContent === 'none' && Boolean(details?.actualEndTime); if (!details || ended) return []; const startTimeRaw = details.actualStartTime || details.scheduledStartTime || item.snippet?.publishedAt; if (!live && new Date(startTimeRaw).getTime() > cutoff) return []; return [{ videoId: item.id, title: item.snippet?.title || '', channelTitle: item.snippet?.channelTitle || '', channelId: item.snippet?.channelId || '', channelIcon: item.snippet?.thumbnails?.default?.url || '', thumbnail: `https://i.ytimg.com/vi/${item.id}/hqdefault.jpg`, videoUrl: `https://www.youtube.com/watch?v=${item.id}`, viewers: Number(details.concurrentViewers || 0), liveViewersFormatted: details.concurrentViewers ? Number(details.concurrentViewers).toLocaleString() : null, startTimeRaw, startTime: format(startTimeRaw), dateKey: format(startTimeRaw, true), isLive: live, isEnded: false, mentions: [], guests: [], source: 'youtube_api', priority: 3 }]; }); }
 async function archiveStats(env, videoId, fallback) { const [youtube, detail] = await Promise.allSettled([async () => { if (!env.YOUTUBE_API_KEY) return 0; const query = new URLSearchParams({ part: 'contentDetails', id: videoId, key: env.YOUTUBE_API_KEY }); const response = await fetch(`https://www.googleapis.com/youtube/v3/videos?${query}`); return response.ok ? isoDurationSeconds((await response.json()).items?.[0]?.contentDetails?.duration) : 0; }, holodex(env, `/videos/${encodeURIComponent(videoId)}`)]); const peak = Number(detail.status === 'fulfilled' ? detail.value?.live_viewers : 0) || Number(String(fallback.liveViewersFormatted || 0).replaceAll(',', '')) || 0; return { duration: youtube.status === 'fulfilled' ? youtube.value : 0, peak }; }
 async function endedFrom(previous, current, env, keep) { const currentIds = new Set(current.map((item) => item.videoId)); const candidates = previous.filter((item) => !currentIds.has(item.videoId)); return (await Promise.all(candidates.map(async (item) => { const stats = await archiveStats(env, item.videoId, item); return { ...item, isLive: false, isEnded: true, liveViewersFormatted: stats.peak ? Number(stats.peak).toLocaleString() : item.liveViewersFormatted, durationLabel: stats.duration ? `${Math.floor(stats.duration / 60)}:${String(stats.duration % 60).padStart(2, '0')}` : item.durationLabel }; }))).filter((item) => new Date(item.startTimeRaw).getTime() >= keep); }
@@ -107,19 +115,21 @@ async function monitor(env) {
   const own = await Promise.all(chunks.map((chunk) => holodex(env, '/live', { channels: chunk.join(','), include: 'mentions', max_upcoming_hours: '336' })));
   const external = await holodex(env, '/live', { org: 'Hololive', include: 'mentions', limit: '50', max_upcoming_hours: '336' });
   const holodexVideos = [...own.flat(), ...external].map((raw) => video(raw, globalIds, master.talentMap)).filter((item) => globalIds.has(item.channelId) || item.guests.length);
-  const [previousAllLive, previousAllUpcoming, previousAllEnded, previousUiLive, previousUiUpcoming, previousUiEnded, notificationHistory, processedRssIds, lastYoutubeScan] = await Promise.all([
-    getState(env, 'all_live', []), getState(env, 'all_upcoming', []), getState(env, 'all_ended', []), getState(env, 'ui_live', []), getState(env, 'ui_upcoming', []), getState(env, 'ui_ended', []), getState(env, 'notification_history', {}), getState(env, 'processed_rss_ids', []), getState(env, 'last_youtube_scan', 0)
+  const [previousAllLive, previousAllUpcoming, previousAllEnded, previousUiLive, previousUiUpcoming, previousUiEnded, notificationHistory, processedRssIds, lastYoutubeScan, rssCursor] = await Promise.all([
+    getState(env, 'all_live', []), getState(env, 'all_upcoming', []), getState(env, 'all_ended', []), getState(env, 'ui_live', []), getState(env, 'ui_upcoming', []), getState(env, 'ui_ended', []), getState(env, 'notification_history', {}), getState(env, 'processed_rss_ids', []), getState(env, 'last_youtube_scan', 0), getState(env, 'rss_channel_cursor', 0)
   ]);
-  let youtubeVideos = []; let nextProcessed = processedRssIds; let scannedYoutube = false;
+  let youtubeVideos = []; let nextProcessed = processedRssIds; let nextRssCursor = rssCursor; let scannedYoutube = false;
   if (env.YOUTUBE_API_KEY && now - Number(lastYoutubeScan || 0) >= youtubeInterval(new Date(now))) {
     const holodexIds = new Set(holodexVideos.map((item) => item.videoId));
-    const rss = await rssIds(ids);
+    const rssChannels = rotatingBatch(ids, rssCursor, RSS_CHANNELS_PER_SCAN);
+    const rss = await rssIds(rssChannels);
     const candidates = new Set(rss.filter((id) => !holodexIds.has(id) && !processedRssIds.includes(id)));
     const oneDayAgo = now - 86400000;
     previousAllUpcoming.forEach((item) => { const time = new Date(item.startTimeRaw).getTime(); if (!holodexIds.has(item.videoId) && (time > now || time >= oneDayAgo)) candidates.add(item.videoId); });
     youtubeVideos = await youtubeDetails(env, [...candidates]);
     const valid = new Set(youtubeVideos.map((item) => item.videoId));
     nextProcessed = [...new Set([...processedRssIds, ...[...candidates].filter((id) => !valid.has(id))])].slice(-5000);
+    nextRssCursor = ids.length ? (Number(rssCursor || 0) + rssChannels.length) % ids.length : 0;
     scannedYoutube = true;
   }
   const all = merge([...holodexVideos, ...youtubeVideos]);
@@ -142,7 +152,7 @@ async function monitor(env) {
   };
   const [allState, uiState] = await Promise.all([split(all, previousAllLive, previousAllUpcoming, previousAllEnded), split(classifiedFavorites, previousUiLive, previousUiUpcoming, previousUiEnded)]);
   // A notification provider outage must never discard a successful monitor result.
-  await setStates(env, { all_live: allState.live, all_upcoming: allState.upcoming, all_ended: allState.ended, ui_live: uiState.live, ui_upcoming: uiState.upcoming, ui_ended: uiState.ended, notification_history: notificationHistory, processed_rss_ids: nextProcessed, last_youtube_scan: scannedYoutube ? now : lastYoutubeScan, last_monitor_run: now });
+  await setStates(env, { all_live: allState.live, all_upcoming: allState.upcoming, all_ended: allState.ended, ui_live: uiState.live, ui_upcoming: uiState.upcoming, ui_ended: uiState.ended, notification_history: notificationHistory, processed_rss_ids: nextProcessed, rss_channel_cursor: scannedYoutube ? nextRssCursor : rssCursor, last_youtube_scan: scannedYoutube ? now : lastYoutubeScan, last_monitor_run: now });
   try {
     const nextHistory = await notifyChanges(env, classifiedFavorites, notificationHistory);
     if (nextHistory !== notificationHistory) await setState(env, 'notification_history', nextHistory);
