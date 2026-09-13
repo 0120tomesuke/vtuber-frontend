@@ -1,0 +1,12 @@
+CREATE TABLE IF NOT EXISTS app_state (
+  state_key TEXT PRIMARY KEY,
+  state_value JSONB NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS job_locks (
+  lock_name TEXT PRIMARY KEY,
+  locked_until TIMESTAMPTZ NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+

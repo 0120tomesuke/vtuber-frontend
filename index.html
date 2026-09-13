@@ -242,8 +242,8 @@
   /* ==========================================
      0. 基本設定・状態管理
      ========================================== */
-  // Render上で稼働しているバックエンドAPIのベースURLへ変更
-  const API_BASE_URL = "https://vtuber-frontend.onrender.com/api";
+  // 同じRenderサービスから配信するNode.js API
+  const API_BASE_URL = "/api";
 
   let currentViewMode = 'fav';
   let videoDataCache = { fav: null, all: null };
@@ -397,8 +397,7 @@
     isAllFailed = false;
 
     try {
-      // 変更点: GASのクエリパラメータによる分岐から、REST APIのエンドポイント指定に変更
-      const rawAll = await fetchWithTimeoutAndRetry(`${API_BASE_URL}/streams?mode=all`, { method: 'GET' }, 3, 20000, "ALL");
+      const rawAll = await fetchWithTimeoutAndRetry(`${API_BASE_URL}/videos?mode=all`, { method: 'GET' }, 3, 20000, "ALL");
       const cleanAll = sanitizeVideoData(rawAll, "ALL");
 
       videoDataCache.all = cleanAll;
@@ -510,15 +509,13 @@
     element.innerText = isNowActive ? "♥" : "♡";
 
     try {
-      // 変更点: GASのクエリパラメータによるGETリクエストから、REST標準のPOSTリクエストへ移行
-      const url = `${API_BASE_URL}/favorites`;
+      const url = `${API_BASE_URL}/favorites/${encodeURIComponent(channelId)}`;
       await fetchWithTimeoutAndRetry(url, {
-        method: 'POST',
+        method: 'PATCH',
         headers: {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          channelId: channelId,
           isFavorite: isNowActive
         })
       }, 2, 10000, "toggleFavorite");
@@ -692,8 +689,7 @@
 
     let hasRenderedPrimary = false;
 
-    // 変更点: GAS_URLからAPI_BASE_URLへの切り替え。GETメソッドを明示。
-    const favPromise = fetchWithTimeoutAndRetry(`${API_BASE_URL}/streams?mode=fav`, { method: 'GET' }, 3, 15000, "FAV")
+    const favPromise = fetchWithTimeoutAndRetry(`${API_BASE_URL}/videos?mode=fav`, { method: 'GET' }, 3, 15000, "FAV")
       .then(rawFav => {
         const cleanFav = sanitizeVideoData(rawFav, "FAV");
         videoDataCache.fav = cleanFav;
