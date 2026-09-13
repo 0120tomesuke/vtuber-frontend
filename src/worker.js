@@ -489,12 +489,35 @@ function notificationHtml(items, master) {
   }).join('')}<div style="text-align:center;margin-top:20px;padding-top:20px;border-top:1px solid #eee;font-size:12px;color:#999">※このメールは自動送信されています。</div></div>`;
 }
 
+async function resendSend(env, payload) {
+  const response = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${env.RESEND_API_KEY}`,
+      'content-type': 'application/json',
+      // Resend rejects some Cloudflare Worker requests without this header.
+      'User-Agent': 'hololive-live-monitor/1.0'
+    },
+    body: JSON.stringify(payload)
+  });
+  if (response.ok) return true;
+  const detail = (await response.text()).replaceAll(/\s+/g, ' ').slice(0, 500);
+  throw new Error(`Resend failed: ${response.status}${detail ? ` ${detail}` : ''}`);
+}
+async function sendAndLog(env, type, subject, items, send) {
+  try {
+    const sent = await send();
+    await logNotification(env, type, subject, items, sent ? 'sent' : 'skipped');
+    return sent;
+  } catch (error) {
+    await logNotification(env, type, subject, items, 'failed', { error: String(error.message || error).slice(0, 1000) });
+    throw error;
+  }
+}
 async function sendEmail(env, subject, items, senderName, master) {
   const recipient = (await notificationSettings(env)).notification_email || env.NOTIFICATION_EMAIL;
   if (!items.length || !env.RESEND_API_KEY || !env.EMAIL_FROM || !recipient) return false;
-  const response = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'content-type': 'application/json' }, body: JSON.stringify({ from: `${senderName} <${env.EMAIL_FROM}>`, to: [recipient], subject, html: notificationHtml(items, master) }) });
-  if (!response.ok) throw new Error(`Resend failed: ${response.status}`);
-  return true;
+  return resendSend(env, { from: `${senderName} <${env.EMAIL_FROM}>`, to: [recipient], subject, html: notificationHtml(items, master) });
 }
 
 function updateNotificationHistory(history, items) {
@@ -514,10 +537,10 @@ async function notifyChanges(env, items, history, master) {
   const candidates = items.filter((item) => item.notificationKind && notificationTarget(item, master));
   const fresh = settings.notify_new ? candidates.filter((item) => item.notificationKind === 'new') : [];
   const changed = settings.notify_changed ? candidates.filter((item) => item.notificationKind === 'changed' && shouldSendChanged(item, now)) : [];
-  const sentNew = await sendEmail(env, `新規：${subjectSummary(fresh, 'new', master.talentMap)}`, fresh, 'ホロライブ新規配信通知', master);
-  const sentChanged = await sendEmail(env, `変更：${subjectSummary(changed, 'changed', master.talentMap)}`, changed, 'ホロライブ配信変更通知', master);
-  if (fresh.length) await logNotification(env, 'new', `新規：${subjectSummary(fresh, 'new', master.talentMap)}`, fresh, sentNew ? 'sent' : 'skipped');
-  if (changed.length) await logNotification(env, 'changed', `変更：${subjectSummary(changed, 'changed', master.talentMap)}`, changed, sentChanged ? 'sent' : 'skipped');
+  const newSubject = `新規：${subjectSummary(fresh, 'new', master.talentMap)}`;
+  const changedSubject = `変更：${subjectSummary(changed, 'changed', master.talentMap)}`;
+  const sentNew = fresh.length ? await sendAndLog(env, 'new', newSubject, fresh, () => sendEmail(env, newSubject, fresh, 'ホロライブ新規配信通知', master)) : false;
+  const sentChanged = changed.length ? await sendAndLog(env, 'changed', changedSubject, changed, () => sendEmail(env, changedSubject, changed, 'ホロライブ配信通知', master)) : false;
   if ((fresh.length && !sentNew) || (changed.length && !sentChanged)) return history;
   return updateNotificationHistory(history, items);
 }
@@ -533,9 +556,7 @@ function startNotificationHtml(items) {
 async function sendStartEmail(env, subject, items, senderName) {
   const recipient = (await notificationSettings(env)).notification_email || env.NOTIFICATION_EMAIL;
   if (!items.length || !env.RESEND_API_KEY || !env.EMAIL_FROM || !recipient) return false;
-  const response = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'content-type': 'application/json' }, body: JSON.stringify({ from: `${senderName} <${env.EMAIL_FROM}>`, to: [recipient], subject, html: startNotificationHtml(items) }) });
-  if (!response.ok) throw new Error(`Resend failed: ${response.status}`);
-  return true;
+  return resendSend(env, { from: `${senderName} <${env.EMAIL_FROM}>`, to: [recipient], subject, html: startNotificationHtml(items) });
 }
 function imminentReason(item, master) {
   const favoriteIds = new Set(Object.keys(master.favorites));
@@ -574,13 +595,13 @@ async function notifyJustBeforeStart(env) {
     });
     const next = { ...cleanedHistory };
     for (const item of early) {
-      const sent = await sendStartEmail(env, `⚡【開始済み通知】${item.channelTitle} が配信を開始しました（前倒し/フライング）`, [item], 'ホロライブ緊急通知');
-      await logNotification(env, 'imminent_early', `⚡【開始済み通知】${item.channelTitle} が配信を開始しました（前倒し/フライング）`, [item], sent ? 'sent' : 'skipped');
+      const subject = `⚡【開始済み通知】${item.channelTitle} が配信を開始しました（前倒し/フライング）`;
+      const sent = await sendAndLog(env, 'imminent_early', subject, [item], () => sendStartEmail(env, subject, [item], 'ホロライブ緊急通知'));
       if (sent) next[item.videoId] = { time: now, notified_imminent: true };
     }
     if (scheduled.length) {
-      const sent = await sendStartEmail(env, `🔔 配信開始: ${scheduled.length}件の注目配信`, scheduled, '配信開始通知');
-      await logNotification(env, 'imminent_scheduled', `🔔 配信開始: ${scheduled.length}件の注目配信`, scheduled, sent ? 'sent' : 'skipped');
+      const subject = `🔔 配信開始: ${scheduled.length}件の注目配信`;
+      const sent = await sendAndLog(env, 'imminent_scheduled', subject, scheduled, () => sendStartEmail(env, subject, scheduled, '配信開始通知'));
       if (sent) scheduled.forEach((item) => { next[item.videoId] = { time: now, notified_imminent: true }; });
     }
     if (JSON.stringify(next) !== JSON.stringify(history)) await setState(env, 'imminent_notification_history', next);
@@ -673,14 +694,15 @@ async function adminApi(request, env, url) {
   if (!await operationalReady(env)) return json({ error: 'D1 migration 0002 must be applied first.' }, 503);
   const path = url.pathname;
   if (request.method === 'GET' && path === '/api/admin/overview') {
-    const [channels, keywords, words, settings, notifications, runs] = await Promise.all([
+    const [channels, keywords, words, settings, notifications, runs, errors] = await Promise.all([
       queryAll(env, 'SELECT channel_id, name, group_name, youtube_url, is_global, is_favorite, is_excluded, priority FROM channels ORDER BY is_favorite DESC, priority DESC, name'),
       queryAll(env, 'SELECT category, keyword FROM event_keywords ORDER BY category, keyword'), queryAll(env, 'SELECT keyword FROM exclude_words ORDER BY keyword'),
       queryAll(env, 'SELECT setting_key, setting_value, updated_at FROM app_settings ORDER BY setting_key'),
       queryAll(env, 'SELECT id, video_id, notification_type, subject, status, detail_json, created_at FROM notification_log ORDER BY id DESC LIMIT 100'),
-      queryAll(env, 'SELECT id, started_at, finished_at, run_type, rss_batch_start, status, discovered_count, message FROM monitor_runs ORDER BY id DESC LIMIT 100')
+      queryAll(env, 'SELECT id, started_at, finished_at, run_type, rss_batch_start, status, discovered_count, message FROM monitor_runs ORDER BY id DESC LIMIT 100'),
+      queryAll(env, "SELECT state_key, state_value, updated_at FROM app_state WHERE state_key IN ('notification_error', 'imminent_notification_error') ORDER BY updated_at DESC")
     ]);
-    return json({ channels, keywords, excludeWords: words.map((row) => row.keyword), settings, notifications, runs });
+    return json({ channels, keywords, excludeWords: words.map((row) => row.keyword), settings, notifications, runs, errors });
   }
   if (request.method === 'PUT' && path === '/api/admin/channels') {
     const body = await request.json(); const id = String(body.channelId || '').trim();
