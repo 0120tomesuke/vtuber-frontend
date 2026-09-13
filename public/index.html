@@ -775,7 +775,8 @@
       video.isDeleted ? `<div class="label-deleted">削除</div>` : ""
     ].join("");
 
-    const durationHtml = (video.isEnded && video.durationLabel) ? `<div class="duration-badge">${video.durationLabel}</div>` : "";
+    const duration = String(video.durationLabel || "");
+    const durationHtml = (video.isEnded && /^\d{1,3}:\d{2}(?::\d{2})?$/.test(duration)) ? `<div class="duration-badge">${duration}</div>` : "";
     const ownerIconPC = video.channelIcon ? `<img src="${video.channelIcon}" class="owner-icon-pc" title="${video.channelTitle || ''}" alt="">` : "";
     const ownerIconSP = video.channelIcon ? `<img src="${video.channelIcon}" class="owner-icon-sp" alt="">` : "";
 
@@ -793,7 +794,7 @@
     if (video.isLive && video.liveViewersFormatted) {
       viewersHtml = `<div class="live-viewers ${isMax ? "max-live" : ""}">同接：${video.liveViewersFormatted} <button class="viewer-chart-btn" onclick="event.preventDefault();event.stopPropagation();openViewerChart('${video.videoId}', decodeURIComponent('${encodeURIComponent(video.title || '')}'))">📈 推移</button></div>`;
     } else if (video.isEnded && video.liveViewersFormatted) {
-      viewersHtml = `<div class="live-viewers ended-stats">最大同接： ${video.liveViewersFormatted} <button class="viewer-chart-btn" onclick="event.preventDefault();event.stopPropagation();openViewerChart('${video.videoId}', decodeURIComponent('${encodeURIComponent(video.title || '')}'))">📈 推移</button></div>`;
+      viewersHtml = `<div class="live-viewers ended-stats"><span class="ended-stat-label">最大同接</span><strong>${video.liveViewersFormatted}</strong><button class="viewer-chart-btn" onclick="event.preventDefault();event.stopPropagation();openViewerChart('${video.videoId}', decodeURIComponent('${encodeURIComponent(video.title || '')}'))">推移</button></div>`;
     }
 
     const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);

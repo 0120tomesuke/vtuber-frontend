@@ -1242,3 +1242,27 @@ body.menu-open #side-menu {
 @media (max-width: 600px) { .admin-panel { margin: 0; padding: 16px; } .admin-list > div { display: block; } }
 .viewer-chart-btn { padding: 2px 5px; border: 1px solid currentColor; border-radius: 5px; background: transparent; color: inherit; font-size: 11px; cursor: pointer; }
 .viewer-chart { display: block; width: 100%; min-height: 180px; margin: 12px 0; border-radius: 8px; background: #0f172a; }
+
+/* Archived-stream statistics are metadata, not an alert.  Keep them clear of
+   the thumbnail and visually distinct from the red live-viewer badge. */
+.live-viewers.ended-stats {
+  position: static !important;
+  display: inline-flex !important;
+  align-items: center;
+  align-self: center;
+  gap: 7px;
+  margin: 4px auto 0 !important;
+  padding: 6px 10px !important;
+  border: 1px solid rgba(56, 189, 248, .55) !important;
+  border-radius: 999px !important;
+  background: linear-gradient(135deg, rgba(14, 116, 144, .94), rgba(30, 41, 59, .96)) !important;
+  color: #e0f2fe !important;
+  font-size: 12px !important;
+  line-height: 1.1 !important;
+  letter-spacing: .02em;
+  text-shadow: none !important;
+}
+.ended-stat-label { color: #bae6fd; font-weight: 700; }
+.live-viewers.ended-stats strong { color: #fff; font-size: 15px; letter-spacing: .04em; }
+.live-viewers.ended-stats .viewer-chart-btn { border-color: rgba(186, 230, 253, .7); color: #e0f2fe; }
+@media screen and (min-width: 769px) { .live-viewers.ended-stats { order: 3; } }

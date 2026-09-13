@@ -60,7 +60,9 @@ function upsertVideo(env, item, now) {
 async function persistVideoState(env, scope, state, items, now) {
   if (!await operationalReady(env)) return;
   const statements = [];
-  if (state !== 'ended') statements.push(env.DB.prepare("DELETE FROM video_states WHERE scope = ? AND status IN ('live', 'upcoming')").bind(scope));
+  // Replace only the status being refreshed.  Deleting both here caused the
+  // subsequent upcoming write to erase the just-written live rows.
+  if (state !== 'ended') statements.push(env.DB.prepare('DELETE FROM video_states WHERE scope = ? AND status = ?').bind(scope, state));
   items.forEach((item) => {
     if (!item?.videoId) return;
     statements.push(upsertVideo(env, item, now));
