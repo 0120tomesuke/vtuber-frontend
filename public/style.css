@@ -1221,3 +1221,24 @@ body.menu-open #side-menu {
 @keyframes popup-spin {
   to { transform: rotate(360deg); }
 }
+
+.admin-modal { position: fixed; inset: 0; z-index: 30000; padding: 18px; overflow: auto; background: rgba(0,0,0,.72); }
+.admin-panel { position: relative; max-width: 860px; margin: 20px auto; padding: 24px; border: 1px solid #00d9ff; border-radius: 16px; background: #111827; color: #f8fafc; }
+.admin-panel h2 { margin-top: 0; color: #67e8f9; }
+.admin-panel section { margin: 22px 0; padding: 16px; border-radius: 10px; background: rgba(255,255,255,.06); }
+.admin-panel h3 { margin: 0 0 12px; color: #a5f3fc; }
+.admin-panel input { max-width: 100%; padding: 8px; border: 1px solid #64748b; border-radius: 6px; background: #0f172a; color: #fff; }
+.admin-panel button { margin: 4px; padding: 7px 10px; border: 0; border-radius: 6px; background: #0891b2; color: #fff; cursor: pointer; }
+.admin-form, .admin-toggles { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.admin-toggles label { padding: 6px 9px; background: #0f172a; border-radius: 6px; }
+.admin-list > div, .admin-log > div { display: flex; justify-content: space-between; gap: 10px; padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,.12); font-size: 13px; }
+.admin-list small { color: #cbd5e1; flex: 1; }
+.admin-log { max-height: 240px; overflow: auto; color: #e2e8f0; }
+.admin-log > div { display: block; }
+.admin-chips span { display: inline-block; margin: 3px; padding: 3px 6px; border-radius: 12px; background: #164e63; }
+.admin-chips button { margin: 0 0 0 4px; padding: 0 4px; background: transparent; }
+.admin-close { position: absolute; right: 12px; top: 10px; font-size: 22px; background: transparent !important; }
+.admin-error { color: #fca5a5; }
+@media (max-width: 600px) { .admin-panel { margin: 0; padding: 16px; } .admin-list > div { display: block; } }
+.viewer-chart-btn { padding: 2px 5px; border: 1px solid currentColor; border-radius: 5px; background: transparent; color: inherit; font-size: 11px; cursor: pointer; }
+.viewer-chart { display: block; width: 100%; min-height: 180px; margin: 12px 0; border-radius: 8px; background: #0f172a; }

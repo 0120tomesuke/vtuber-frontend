@@ -6,3 +6,5 @@ GOOGLE_SERVICE_ACCOUNT_JSON=
 RESEND_API_KEY=
 EMAIL_FROM=
 NOTIFICATION_EMAIL=
+# Required only for the in-app management screen. Use a long unique value.
+ADMIN_PASSWORD=

@@ -37,6 +37,86 @@ async function setStates(env, values) {
   await env.DB.batch(Object.entries(values).map(([key, value]) => env.DB.prepare('INSERT INTO app_state (state_key, state_value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON CONFLICT(state_key) DO UPDATE SET state_value = excluded.state_value, updated_at = CURRENT_TIMESTAMP').bind(key, JSON.stringify(value))));
 }
 
+// D1 is the source of truth for operational data. app_state is intentionally
+// retained only for small cursors and compatibility during this migration.
+async function queryAll(env, sql, ...bindings) { return (await env.DB.prepare(sql).bind(...bindings).all()).results || []; }
+async function operationalReady(env) {
+  try { await env.DB.prepare('SELECT 1 FROM channels LIMIT 1').first(); return true; } catch { return false; }
+}
+function statusOf(item) { return item.isEnded ? 'ended' : item.isLive ? 'live' : 'upcoming'; }
+async function readVideoState(env, scope, status) {
+  if (!await operationalReady(env)) return null;
+  const rows = await queryAll(env, `SELECT v.data_json FROM video_states s JOIN videos v ON v.video_id = s.video_id WHERE s.scope = ? AND s.status = ? ORDER BY COALESCE(v.start_time, '') ${status === 'ended' ? 'DESC' : 'ASC'}`, scope, status);
+  return rows.flatMap((row) => { try { return [JSON.parse(row.data_json)]; } catch { return []; } });
+}
+function upsertVideo(env, item, now) {
+  const status = statusOf(item);
+  const peak = Number(item.viewers || String(item.liveViewersFormatted || '').replaceAll(',', '') || 0);
+  return env.DB.prepare(`INSERT INTO videos (video_id, title, channel_id, channel_title, video_url, thumbnail, start_time, status, is_special, peak_viewers, duration_seconds, data_json, first_seen_at, last_seen_at, ended_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
+    ON CONFLICT(video_id) DO UPDATE SET title=excluded.title, channel_id=excluded.channel_id, channel_title=excluded.channel_title, video_url=excluded.video_url, thumbnail=excluded.thumbnail, start_time=excluded.start_time, status=excluded.status, is_special=excluded.is_special, peak_viewers=MAX(videos.peak_viewers, excluded.peak_viewers), data_json=excluded.data_json, last_seen_at=excluded.last_seen_at, ended_at=COALESCE(videos.ended_at, excluded.ended_at)`)
+    .bind(item.videoId, item.title || '', item.channelId || '', item.channelTitle || '', item.videoUrl || '', item.thumbnail || '', item.startTimeRaw || null, status, item.isSpecial ? 1 : 0, peak, JSON.stringify(item), now, now, status === 'ended' ? now : null);
+}
+async function persistVideoState(env, scope, state, items, now) {
+  if (!await operationalReady(env)) return;
+  const statements = [];
+  if (state !== 'ended') statements.push(env.DB.prepare("DELETE FROM video_states WHERE scope = ? AND status IN ('live', 'upcoming')").bind(scope));
+  items.forEach((item) => {
+    if (!item?.videoId) return;
+    statements.push(upsertVideo(env, item, now));
+    statements.push(env.DB.prepare('INSERT INTO video_states (scope, video_id, status, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(scope, video_id) DO UPDATE SET status=excluded.status, updated_at=excluded.updated_at').bind(scope, item.videoId, state, now));
+  });
+  if (state === 'ended') statements.push(env.DB.prepare("DELETE FROM video_states WHERE scope = ? AND status = 'ended' AND video_id IN (SELECT video_id FROM videos WHERE ended_at IS NOT NULL AND ended_at < ?)").bind(scope, now - 90 * 86400_000));
+  if (statements.length) await env.DB.batch(statements);
+}
+async function persistVideoStates(env, states, now) {
+  for (const [scope, state, items] of [['all', 'live', states.allLive], ['all', 'upcoming', states.allUpcoming], ['all', 'ended', states.allEnded], ['ui', 'live', states.uiLive], ['ui', 'upcoming', states.uiUpcoming], ['ui', 'ended', states.uiEnded]]) await persistVideoState(env, scope, state, items, now);
+}
+async function recordViewerSamples(env, liveVideos, now) {
+  if (!await operationalReady(env) || !liveVideos.length) return;
+  // Five-minute buckets keep 90 days of charts practical on D1 Free while
+  // retaining the maximum viewer count observed in every bucket.
+  const observedAt = Math.floor(now / (5 * 60_000)) * 5 * 60_000;
+  await env.DB.batch(liveVideos.filter((item) => item?.videoId).map((item) => env.DB.prepare('INSERT INTO viewer_samples (video_id, observed_at, viewers, source) VALUES (?, ?, ?, ?) ON CONFLICT(video_id, observed_at) DO UPDATE SET viewers=MAX(viewer_samples.viewers, excluded.viewers), source=excluded.source').bind(item.videoId, observedAt, Number(item.viewers || 0), item.source || 'holodex')));
+}
+async function readNotificationHistory(env) {
+  if (!await operationalReady(env)) return null;
+  const rows = await queryAll(env, 'SELECT video_id, state_json FROM notification_state');
+  return Object.fromEntries(rows.flatMap((row) => { try { return [[row.video_id, JSON.parse(row.state_json)]]; } catch { return []; } }));
+}
+async function persistNotificationHistory(env, history, now = Date.now()) {
+  if (!await operationalReady(env)) return;
+  const statements = [env.DB.prepare('DELETE FROM notification_state')];
+  Object.entries(history).forEach(([videoId, state]) => statements.push(env.DB.prepare('INSERT INTO notification_state (video_id, state_json, updated_at) VALUES (?, ?, ?)').bind(videoId, JSON.stringify(state), now)));
+  await env.DB.batch(statements);
+}
+async function logNotification(env, type, subject, items, status, detail = {}) {
+  if (!await operationalReady(env)) return;
+  const now = Date.now();
+  const values = items.length ? items : [null];
+  await env.DB.batch(values.map((item) => env.DB.prepare('INSERT INTO notification_log (video_id, notification_type, subject, status, detail_json, created_at) VALUES (?, ?, ?, ?, ?, ?)').bind(item?.videoId || null, type, subject, status, JSON.stringify(detail), now)));
+}
+async function bootstrapOperationalState(env) {
+  if (!await operationalReady(env)) return;
+  const done = await env.DB.prepare("SELECT 1 FROM app_settings WHERE setting_key='operational_bootstrap' LIMIT 1").first();
+  if (done) return;
+  const [allLive, allUpcoming, allEnded, uiLive, uiUpcoming, uiEnded, notificationHistory] = await Promise.all([
+    getState(env, 'all_live', []), getState(env, 'all_upcoming', []), getState(env, 'all_ended', []), getState(env, 'ui_live', []), getState(env, 'ui_upcoming', []), getState(env, 'ui_ended', []), getState(env, 'notification_history', {})
+  ]);
+  const now = Date.now();
+  await persistVideoStates(env, { allLive, allUpcoming, allEnded, uiLive, uiUpcoming, uiEnded }, now);
+  await persistNotificationHistory(env, notificationHistory, now);
+  await env.DB.prepare("INSERT INTO app_settings (setting_key, setting_value) VALUES ('operational_bootstrap', ?) ON CONFLICT(setting_key) DO NOTHING").bind(String(now)).run();
+}
+async function startMonitorRun(env, type, batchStart = null) {
+  if (!await operationalReady(env)) return null;
+  const result = await env.DB.prepare("INSERT INTO monitor_runs (started_at, run_type, rss_batch_start, status) VALUES (?, ?, ?, 'running')").bind(Date.now(), type, batchStart).run();
+  return result.meta?.last_row_id || null;
+}
+async function finishMonitorRun(env, id, status, discovered = 0, message = '') {
+  if (id) await env.DB.prepare('UPDATE monitor_runs SET finished_at=?, status=?, discovered_count=?, message=? WHERE id=?').bind(Date.now(), status, discovered, String(message || '').slice(0, 1000), id).run();
+}
+
 function pemBytes(pem) {
   const base64 = pem.replace(/-----(BEGIN|END) PRIVATE KEY-----/g, '').replaceAll(/\s/g, '');
   const raw = atob(base64);
@@ -61,17 +141,50 @@ async function sheetValues(env, ranges) {
   if (!response.ok) throw new Error(`Google Sheets read failed: ${response.status}`);
   return (await response.json()).valueRanges.map((entry) => entry.values || []);
 }
-async function masters(env) {
-  const cached = await getState(env, 'master_cache', null);
-  if (cached?.expiresAt > Date.now() && cached.data) return cached.data;
+async function importSheetMasters(env) {
   const [favorites, excludes, words, events, talent, global] = await sheetValues(env, ["'お気に入りチャンネル'!A:C", "'除外チャンネル'!A:B", "'除外ワード'!A:A", "'イベントキーワード'!A:ZZ", "'チャンネル置き換え'!A:B", "'全体チャンネル'!A:B"]);
+  const channels = new Map();
+  const add = (id, patch) => { const key = String(id || '').trim(); if (!key) return; channels.set(key, { ...(channels.get(key) || { name: '', isGlobal: 0, isFavorite: 0, isExcluded: 0 }), ...patch }); };
+  favorites.slice(1).forEach((row) => add(row[1], { name: String(row[0] || '').trim(), isFavorite: String(row[2] || '') === '1' ? 1 : 0 }));
+  excludes.slice(1).forEach((row) => add(row[1], { name: String(row[0] || '').trim(), isExcluded: 1 }));
+  global.slice(1).filter((row) => String(row[1] || '').startsWith('UC')).forEach((row) => add(row[1], { name: String(row[0] || '').trim(), isGlobal: 1 }));
+  if (await operationalReady(env)) {
+    const statements = [];
+    channels.forEach((item, id) => statements.push(env.DB.prepare('INSERT INTO channels (channel_id, name, is_global, is_favorite, is_excluded) VALUES (?, ?, ?, ?, ?) ON CONFLICT(channel_id) DO UPDATE SET name=CASE WHEN excluded.name <> \'\' THEN excluded.name ELSE channels.name END, is_global=MAX(channels.is_global, excluded.is_global), is_favorite=excluded.is_favorite, is_excluded=MAX(channels.is_excluded, excluded.is_excluded), updated_at=CURRENT_TIMESTAMP').bind(id, item.name, item.isGlobal, item.isFavorite, item.isExcluded)));
+    words.filter((row) => row[0]).forEach((row) => statements.push(env.DB.prepare('INSERT OR IGNORE INTO exclude_words (keyword) VALUES (?)').bind(String(row[0]).trim())));
+    (events[0] || []).forEach((category, column) => events.slice(1).forEach((row) => { if (category && row[column]) statements.push(env.DB.prepare('INSERT OR IGNORE INTO event_keywords (category, keyword) VALUES (?, ?)').bind(String(category), String(row[column]).trim())); }));
+    talent.slice(1).filter((row) => row[0] && row[1]).forEach((row) => statements.push(env.DB.prepare('INSERT INTO talent_aliases (source_name, display_name) VALUES (?, ?) ON CONFLICT(source_name) DO UPDATE SET display_name=excluded.display_name').bind(String(row[0]), String(row[1]))));
+    statements.push(env.DB.prepare("INSERT INTO app_settings (setting_key, setting_value) VALUES ('sheets_imported_at', ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value=excluded.setting_value, updated_at=CURRENT_TIMESTAMP").bind(String(Date.now())));
+    if (statements.length) await env.DB.batch(statements);
+  }
   const favoriteMap = Object.fromEntries(favorites.slice(1).filter((row) => String(row[2] || '') === '1' && row[1]).map((row) => [String(row[1]).trim(), { name: String(row[0] || '').trim() }]));
   const eventKeywords = Object.fromEntries((events[0] || []).map((title, column) => [title, events.slice(1).map((row) => row[column]).filter(Boolean)]).filter(([title]) => title));
-  const data = { favorites: favoriteMap, excludes: excludes.slice(1).map((row) => row[1]).filter(Boolean), excludeWords: words.map((row) => String(row[0] || '').toLowerCase()).filter(Boolean), eventKeywords, talentMap: Object.fromEntries(talent.slice(1).filter((row) => row[0] && row[1])), global: Object.fromEntries(global.slice(1).filter((row) => String(row[1] || '').startsWith('UC')).map((row) => [String(row[1]), { name: row[0] }])) };
-  await setState(env, 'master_cache', { expiresAt: Date.now() + 5 * 60_000, data });
-  return data;
+  return { favorites: favoriteMap, excludes: excludes.slice(1).map((row) => row[1]).filter(Boolean), excludeWords: words.map((row) => String(row[0] || '').toLowerCase()).filter(Boolean), eventKeywords, talentMap: Object.fromEntries(talent.slice(1).filter((row) => row[0] && row[1])), global: Object.fromEntries(global.slice(1).filter((row) => String(row[1] || '').startsWith('UC')).map((row) => [String(row[1]), { name: row[0] }])) };
+}
+function masterFromRows(channels, words = [], events = [], aliases = []) {
+  const values = channels instanceof Map ? [...channels.entries()].map(([channel_id, item]) => ({ channel_id, name: item.name, is_global: item.isGlobal, is_favorite: item.isFavorite, is_excluded: item.isExcluded })) : channels;
+  const favorites = Object.fromEntries(values.filter((item) => Number(item.is_favorite)).map((item) => [item.channel_id, { name: item.name || '', priority: Number(item.priority || 0) }]));
+  const global = Object.fromEntries(values.filter((item) => Number(item.is_global)).map((item) => [item.channel_id, { name: item.name || '', priority: Number(item.priority || 0) }]));
+  const eventKeywords = {};
+  events.forEach((item) => { const category = Array.isArray(item) ? item.category : item.category; const keyword = Array.isArray(item) ? item.keyword : item.keyword; if (!category || !keyword) return; (eventKeywords[category] ||= []).push(keyword); });
+  return { favorites, global, excludes: values.filter((item) => Number(item.is_excluded)).map((item) => item.channel_id), excludeWords: words.map((row) => String(Array.isArray(row) ? row[0] : row.keyword || row.setting_value || '').toLowerCase()).filter(Boolean), eventKeywords, talentMap: Object.fromEntries(aliases.filter((row) => (Array.isArray(row) ? row[0] : row.source_name) && (Array.isArray(row) ? row[1] : row.display_name)).map((row) => [Array.isArray(row) ? row[0] : row.source_name, Array.isArray(row) ? row[1] : row.display_name])) };
+}
+async function masters(env) {
+  if (await operationalReady(env)) {
+    const existing = await queryAll(env, 'SELECT channel_id, name, is_global, is_favorite, is_excluded, priority FROM channels');
+    if (!existing.length) await importSheetMasters(env);
+    await bootstrapOperationalState(env);
+    const [channels, keywords, words, aliases] = await Promise.all([queryAll(env, 'SELECT channel_id, name, is_global, is_favorite, is_excluded, priority FROM channels ORDER BY is_favorite DESC, priority DESC, name'), queryAll(env, 'SELECT category, keyword FROM event_keywords'), queryAll(env, 'SELECT keyword FROM exclude_words'), queryAll(env, 'SELECT source_name, display_name FROM talent_aliases')]);
+    return masterFromRows(channels, words, keywords, aliases);
+  }
+  // Allows a safe deploy before the D1 migration has been applied.
+  return importSheetMasters(env);
 }
 async function updateFavorite(env, channelId, isFavorite) {
+  if (await operationalReady(env)) {
+    const result = await env.DB.prepare('UPDATE channels SET is_favorite=?, updated_at=CURRENT_TIMESTAMP WHERE channel_id=?').bind(isFavorite ? 1 : 0, channelId).run();
+    return Number(result.meta?.changes || 0) > 0;
+  }
   const token = await googleToken(env);
   const readUrl = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(env.GOOGLE_SHEETS_ID)}/values/${encodeURIComponent("'お気に入りチャンネル'!A:C")}`;
   const readResponse = await fetch(readUrl, { headers: { Authorization: `Bearer ${token}` } });
@@ -118,16 +231,23 @@ function distance(left, right) { const a = String(left || ''); const b = String(
 function changedFields(item, previous) { if (!previous) return []; const changes = []; if (distance(normalizeTitle(item.title), normalizeTitle(previous.title)) >= 3) changes.push('タイトル'); if (new Date(item.startTimeRaw).getTime() !== new Date(previous.startTimeRaw).getTime()) changes.push('開始時刻'); return changes; }
 function isoDurationSeconds(value) { const match = /^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/.exec(value || ''); return match ? Number(match[1] || 0) * 3600 + Number(match[2] || 0) * 60 + Number(match[3] || 0) : 0; }
 function tokyoHour(date = new Date()) { return Number(new Intl.DateTimeFormat('en-US', { timeZone: TOKYO, hour: '2-digit', hourCycle: 'h23' }).format(date)); }
-function youtubeInterval(now) { const hour = tokyoHour(now); return hour >= 2 && hour < 7 ? 50 * 60_000 : ((hour < 2 || hour < 15) ? 7.5 * 60_000 : 3.5 * 60_000); }
-// Cloudflare Cron's free minimum interval is one minute.  Keep this below 60 seconds
-// so each scheduled invocation during the active period performs a monitor run.
-function monitorInterval(now) { const hour = tokyoHour(now); return hour >= 10 || hour < 2 ? 55_000 : 15 * 60_000; }
+function youtubeInterval() { return 55_000; }
+// One 20-channel RSS batch per minute means roughly 100 channels are swept in
+// five minutes without exceeding Workers Free's 50 external-subrequest limit.
+function monitorInterval() { return 55_000; }
 async function mapLimit(values, limit, fn) { let cursor = 0; await Promise.all(Array.from({ length: Math.min(limit, values.length) }, async () => { while (cursor < values.length) { const index = cursor++; await fn(values[index]); } })); }
-async function rssIds(channelIds) { const ids = new Set(); await mapLimit(channelIds, 15, async (channelId) => { try { const response = await fetch(`https://www.youtube.com/feeds/videos.xml?channel_id=${encodeURIComponent(channelId)}`); if (!response.ok) return; for (const match of (await response.text()).matchAll(/<yt:videoId>([a-zA-Z0-9_-]{11})<\/yt:videoId>/g)) ids.add(match[1]); } catch { /* A single RSS failure is non-fatal. */ } }); return [...ids]; }
+async function rssIds(channelIds) { const ids = new Set(); await mapLimit(channelIds, 6, async (channelId) => { try { const response = await fetch(`https://www.youtube.com/feeds/videos.xml?channel_id=${encodeURIComponent(channelId)}`); if (!response.ok) return; for (const match of (await response.text()).matchAll(/<yt:videoId>([a-zA-Z0-9_-]{11})<\/yt:videoId>/g)) ids.add(match[1]); } catch { /* A single RSS failure is non-fatal. */ } }); return [...ids]; }
 function rotatingBatch(values, cursor, size) {
   if (!values.length) return [];
   const start = ((Number(cursor) || 0) % values.length + values.length) % values.length;
   return Array.from({ length: Math.min(size, values.length) }, (_, index) => values[(start + index) % values.length]);
+}
+function prioritizedRssBatch(channelIds, master, cursor, size) {
+  const priority = channelIds.filter((id) => master.favorites[id] || Number(master.global[id]?.priority || 0) > 0);
+  const regular = channelIds.filter((id) => !priority.includes(id));
+  const priorityPart = priority.slice(0, Math.min(5, size));
+  const regularPart = rotatingBatch(regular, cursor, size - priorityPart.length);
+  return { channels: [...priorityPart, ...regularPart], nextCursor: regular.length ? (Number(cursor || 0) + regularPart.length) % regular.length : 0 };
 }
 async function youtubeDetails(env, ids) { if (!env.YOUTUBE_API_KEY || !ids.length) return []; const chunks = Array.from({ length: Math.ceil(ids.length / 50) }, (_, i) => ids.slice(i * 50, i * 50 + 50)); const cutoff = Date.now() + 14 * 86400000; const results = await Promise.all(chunks.map(async (chunk) => { const query = new URLSearchParams({ part: 'snippet,liveStreamingDetails', id: chunk.join(','), key: env.YOUTUBE_API_KEY }); const response = await fetch(`https://www.googleapis.com/youtube/v3/videos?${query}`); if (!response.ok) throw new Error(`YouTube API failed: ${response.status}`); return (await response.json()).items || []; })); return results.flat().flatMap((item) => { const details = item.liveStreamingDetails; const live = item.snippet?.liveBroadcastContent === 'live'; const ended = item.snippet?.liveBroadcastContent === 'none' && Boolean(details?.actualEndTime); if (!details || ended) return []; const startTimeRaw = details.actualStartTime || details.scheduledStartTime || item.snippet?.publishedAt; if (!live && new Date(startTimeRaw).getTime() > cutoff) return []; return [{ videoId: item.id, title: item.snippet?.title || '', channelTitle: item.snippet?.channelTitle || '', channelId: item.snippet?.channelId || '', channelIcon: item.snippet?.thumbnails?.default?.url || '', thumbnail: `https://i.ytimg.com/vi/${item.id}/hqdefault.jpg`, videoUrl: `https://www.youtube.com/watch?v=${item.id}`, viewers: Number(details.concurrentViewers || 0), liveViewersFormatted: details.concurrentViewers ? Number(details.concurrentViewers).toLocaleString() : null, startTimeRaw, startTime: format(startTimeRaw), dateKey: format(startTimeRaw, true), isLive: live, isEnded: false, mentions: [], guests: [], source: 'youtube_api', priority: 3 }]; }); }
 function updateViewerBuffer(buffer, liveVideos, now) {
@@ -142,6 +262,9 @@ function updateViewerBuffer(buffer, liveVideos, now) {
 }
 async function syncViewerBufferSheet(env, liveVideos, now) {
   if (!liveVideos.length) return;
+  // After migration D1 owns viewer history.  Do not grow or repeatedly rewrite
+  // the spreadsheet during normal monitoring.
+  if (await operationalReady(env)) return;
   try {
     const token = await googleToken(env);
     const range = "'同接バッファ'!A:D";
@@ -168,6 +291,7 @@ async function syncViewerBufferSheet(env, liveVideos, now) {
   } catch (error) { console.error('Viewer buffer sheet sync failed.', error); }
 }
 async function cleanupOldBufferSheet(env, now = Date.now()) {
+  if (await operationalReady(env)) return;
   const token = await googleToken(env);
   const range = "'同接バッファ'!A:D";
   const baseUrl = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(env.GOOGLE_SHEETS_ID)}/values/${encodeURIComponent(range)}`;
@@ -190,13 +314,13 @@ async function cleanupOldBufferSheet(env, now = Date.now()) {
   if (!writeResponse.ok) throw new Error(`Google Sheets buffer cleanup write failed: ${writeResponse.status}`);
 }
 async function autoCleanupNotificationHistory(env, now = Date.now()) {
-  const history = await getState(env, 'notification_history', {});
+  const history = (await readNotificationHistory(env)) ?? await getState(env, 'notification_history', {});
   const border = now - 3 * 86400_000;
   const cleaned = Object.fromEntries(Object.entries(history).filter(([, item]) => {
     const start = new Date(item?.startTimeRaw || item?.startTime || '').getTime();
     return Number.isFinite(start) && start >= border;
   }));
-  if (Object.keys(cleaned).length !== Object.keys(history).length) await setState(env, 'notification_history', cleaned);
+  if (Object.keys(cleaned).length !== Object.keys(history).length) (await operationalReady(env)) ? await persistNotificationHistory(env, cleaned, now) : await setState(env, 'notification_history', cleaned);
 }
 async function runPeriodicMaintenance(env, key, intervalMs, task, now = Date.now()) {
   const previous = await getState(env, key, 0);
@@ -205,7 +329,17 @@ async function runPeriodicMaintenance(env, key, intervalMs, task, now = Date.now
   await setState(env, key, now);
   return true;
 }
-async function archiveStats(env, videoId, fallback, bufferedPeak = 0) { const [youtube, detail] = await Promise.allSettled([async () => { if (!env.YOUTUBE_API_KEY) return 0; const query = new URLSearchParams({ part: 'contentDetails', id: videoId, key: env.YOUTUBE_API_KEY }); const response = await fetch(`https://www.googleapis.com/youtube/v3/videos?${query}`); return response.ok ? isoDurationSeconds((await response.json()).items?.[0]?.contentDetails?.duration) : 0; }, holodex(env, `/videos/${encodeURIComponent(videoId)}`)]); const peak = Number(bufferedPeak) || Number(detail.status === 'fulfilled' ? detail.value?.live_viewers : 0) || Number(String(fallback.liveViewersFormatted || 0).replaceAll(',', '')) || 0; return { duration: youtube.status === 'fulfilled' ? youtube.value : 0, peak }; }
+async function cleanupOperationalData(env, now = Date.now()) {
+  if (!await operationalReady(env)) return;
+  const ninetyDays = now - 90 * 86400_000;
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM viewer_samples WHERE observed_at < ?').bind(ninetyDays),
+    env.DB.prepare('DELETE FROM notification_log WHERE created_at < ?').bind(ninetyDays),
+    env.DB.prepare('DELETE FROM monitor_runs WHERE started_at < ?').bind(ninetyDays),
+    env.DB.prepare('DELETE FROM rss_seen WHERE last_seen_at < ?').bind(ninetyDays)
+  ]);
+}
+async function archiveStats(env, videoId, fallback, bufferedPeak = 0) { const storedPeak = await operationalReady(env) ? await env.DB.prepare('SELECT peak_viewers FROM videos WHERE video_id=?').bind(videoId).first() : null; const [youtube, detail] = await Promise.allSettled([async () => { if (!env.YOUTUBE_API_KEY) return 0; const query = new URLSearchParams({ part: 'contentDetails', id: videoId, key: env.YOUTUBE_API_KEY }); const response = await fetch(`https://www.googleapis.com/youtube/v3/videos?${query}`); return response.ok ? isoDurationSeconds((await response.json()).items?.[0]?.contentDetails?.duration) : 0; }, holodex(env, `/videos/${encodeURIComponent(videoId)}`)]); const peak = Number(storedPeak?.peak_viewers || 0) || Number(bufferedPeak) || Number(detail.status === 'fulfilled' ? detail.value?.live_viewers : 0) || Number(String(fallback.liveViewersFormatted || 0).replaceAll(',', '')) || 0; return { duration: youtube.status === 'fulfilled' ? youtube.value : 0, peak }; }
 async function endedFrom(previous, current, env, keep, viewerBuffer = {}) { const currentIds = new Set(current.map((item) => item.videoId)); const candidates = previous.filter((item) => !currentIds.has(item.videoId) && new Date(item.startTimeRaw).getTime() <= Date.now()); return (await Promise.all(candidates.map(async (item) => { const stats = await archiveStats(env, item.videoId, item, viewerBuffer[item.videoId]?.peak); return { ...item, isLive: false, isEnded: true, liveViewersFormatted: stats.peak ? Number(stats.peak).toLocaleString() : item.liveViewersFormatted, durationLabel: stats.duration ? formatDuration(stats.duration) : item.durationLabel }; }))).filter((item) => new Date(item.startTimeRaw).getTime() >= keep); }
 const html = (value) => String(value || '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
 const formatDate = (value) => format(value, true);
@@ -284,8 +418,9 @@ function notificationHtml(items, master) {
 }
 
 async function sendEmail(env, subject, items, senderName, master) {
-  if (!items.length || !env.RESEND_API_KEY || !env.EMAIL_FROM || !env.NOTIFICATION_EMAIL) return false;
-  const response = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'content-type': 'application/json' }, body: JSON.stringify({ from: `${senderName} <${env.EMAIL_FROM}>`, to: [env.NOTIFICATION_EMAIL], subject, html: notificationHtml(items, master) }) });
+  const recipient = (await notificationSettings(env)).notification_email || env.NOTIFICATION_EMAIL;
+  if (!items.length || !env.RESEND_API_KEY || !env.EMAIL_FROM || !recipient) return false;
+  const response = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'content-type': 'application/json' }, body: JSON.stringify({ from: `${senderName} <${env.EMAIL_FROM}>`, to: [recipient], subject, html: notificationHtml(items, master) }) });
   if (!response.ok) throw new Error(`Resend failed: ${response.status}`);
   return true;
 }
@@ -302,11 +437,15 @@ function updateNotificationHistory(history, items) {
 
 async function notifyChanges(env, items, history, master) {
   const now = Date.now();
+  const settings = await notificationSettings(env);
+  if (!settings.notifications_enabled) return updateNotificationHistory(history, items);
   const candidates = items.filter((item) => item.notificationKind && notificationTarget(item, master));
-  const fresh = candidates.filter((item) => item.notificationKind === 'new');
-  const changed = candidates.filter((item) => item.notificationKind === 'changed' && shouldSendChanged(item, now));
+  const fresh = settings.notify_new ? candidates.filter((item) => item.notificationKind === 'new') : [];
+  const changed = settings.notify_changed ? candidates.filter((item) => item.notificationKind === 'changed' && shouldSendChanged(item, now)) : [];
   const sentNew = await sendEmail(env, `新規：${subjectSummary(fresh, 'new', master.talentMap)}`, fresh, 'ホロライブ新規配信通知', master);
   const sentChanged = await sendEmail(env, `変更：${subjectSummary(changed, 'changed', master.talentMap)}`, changed, 'ホロライブ配信変更通知', master);
+  if (fresh.length) await logNotification(env, 'new', `新規：${subjectSummary(fresh, 'new', master.talentMap)}`, fresh, sentNew ? 'sent' : 'skipped');
+  if (changed.length) await logNotification(env, 'changed', `変更：${subjectSummary(changed, 'changed', master.talentMap)}`, changed, sentChanged ? 'sent' : 'skipped');
   if ((fresh.length && !sentNew) || (changed.length && !sentChanged)) return history;
   return updateNotificationHistory(history, items);
 }
@@ -320,8 +459,9 @@ function startNotificationHtml(items) {
   return `<div style="font-family:Arial,sans-serif;max-width:560px;margin:auto">${[...grouped.entries()].map(([time, videos]) => `<div style="margin-top:20px;margin-bottom:10px"><span style="background:#00e6ff;border-left:6px solid #00acc1;padding:6px 12px;border-radius:6px;font-size:18px;font-weight:bold;color:#000">🕒 ${html(time)} 開始</span></div><div style="display:flex;flex-wrap:wrap;gap:10px;background:rgba(0,230,255,.05);padding:12px;border-radius:12px">${videos.map((item) => `<a href="${html(item.videoUrl)}" target="_blank" style="text-decoration:none;color:#000;width:48%;min-width:160px"><div style="background:#fff;border-radius:10px;overflow:hidden;border:1px solid #ddd;height:100%"><img src="https://i.ytimg.com/vi/${html(item.videoId)}/mqdefault.jpg" alt="" style="width:100%;display:block"><div style="padding:8px"><div style="font-size:12px;font-weight:bold;line-height:1.3;height:2.6em;overflow:hidden;margin-bottom:4px">${html(item.title)}</div><div style="font-size:11px;color:#666;margin-bottom:4px">${html(item.channelTitle)}</div><div style="font-size:10px;color:#d32f2f;background:#fff0f0;padding:2px 4px;border-radius:4px;display:inline-block">${html(item.passReason || '')}</div></div></div></a>`).join('')}</div>`).join('')}<p style="color:#999;font-size:12px">※このメールは自動送信されています。</p></div>`;
 }
 async function sendStartEmail(env, subject, items, senderName) {
-  if (!items.length || !env.RESEND_API_KEY || !env.EMAIL_FROM || !env.NOTIFICATION_EMAIL) return false;
-  const response = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'content-type': 'application/json' }, body: JSON.stringify({ from: `${senderName} <${env.EMAIL_FROM}>`, to: [env.NOTIFICATION_EMAIL], subject, html: startNotificationHtml(items) }) });
+  const recipient = (await notificationSettings(env)).notification_email || env.NOTIFICATION_EMAIL;
+  if (!items.length || !env.RESEND_API_KEY || !env.EMAIL_FROM || !recipient) return false;
+  const response = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'content-type': 'application/json' }, body: JSON.stringify({ from: `${senderName} <${env.EMAIL_FROM}>`, to: [recipient], subject, html: startNotificationHtml(items) }) });
   if (!response.ok) throw new Error(`Resend failed: ${response.status}`);
   return true;
 }
@@ -343,6 +483,7 @@ async function notifyJustBeforeStart(env) {
   if (!isTargetWindow) return;
   const isScheduledWindow = (minute >= 29 && minute <= 30) || minute >= 59 || minute === 0;
   try {
+    const settings = await notificationSettings(env); if (!settings.notifications_enabled || !settings.notify_imminent) return;
     const master = await masters(env); const favoriteIds = Object.keys(master.favorites);
     const [history, favoriteRaw, specialRaw] = await Promise.all([
       getState(env, 'imminent_notification_history', {}),
@@ -362,10 +503,12 @@ async function notifyJustBeforeStart(env) {
     const next = { ...cleanedHistory };
     for (const item of early) {
       const sent = await sendStartEmail(env, `⚡【開始済み通知】${item.channelTitle} が配信を開始しました（前倒し/フライング）`, [item], 'ホロライブ緊急通知');
+      await logNotification(env, 'imminent_early', `⚡【開始済み通知】${item.channelTitle} が配信を開始しました（前倒し/フライング）`, [item], sent ? 'sent' : 'skipped');
       if (sent) next[item.videoId] = { time: now, notified_imminent: true };
     }
     if (scheduled.length) {
       const sent = await sendStartEmail(env, `🔔 配信開始: ${scheduled.length}件の注目配信`, scheduled, '配信開始通知');
+      await logNotification(env, 'imminent_scheduled', `🔔 配信開始: ${scheduled.length}件の注目配信`, scheduled, sent ? 'sent' : 'skipped');
       if (sent) scheduled.forEach((item) => { next[item.videoId] = { time: now, notified_imminent: true }; });
     }
     if (JSON.stringify(next) !== JSON.stringify(history)) await setState(env, 'imminent_notification_history', next);
@@ -377,19 +520,25 @@ async function notifyJustBeforeStart(env) {
 async function monitor(env) {
   const now = Date.now();
   const lastRun = await getState(env, 'last_monitor_run', 0);
-  if (now - Number(lastRun || 0) < monitorInterval(new Date(now))) return;
+  if (now - Number(lastRun || 0) < monitorInterval(new Date(now))) return { ran: false, discovered: 0 };
   const master = await masters(env); const ids = Object.keys(master.global); const globalIds = new Set(ids);
+  const relationalStore = await operationalReady(env);
   const chunks = Array.from({ length: Math.ceil(ids.length / 50) }, (_, index) => ids.slice(index * 50, index * 50 + 50));
   const own = await Promise.all(chunks.map((chunk) => holodex(env, '/live', { channels: chunk.join(','), include: 'mentions', max_upcoming_hours: '336' })));
   const external = await holodex(env, '/live', { org: 'Hololive', include: 'mentions', limit: '50', max_upcoming_hours: '336' });
   const holodexVideos = [...own.flat(), ...external].map((raw) => video(raw, globalIds, master.talentMap)).filter((item) => (globalIds.has(item.channelId) || item.guests.length) && shouldInclude(item, master));
-  const [previousAllLive, previousAllUpcoming, previousAllEnded, previousUiLive, previousUiUpcoming, previousUiEnded, notificationHistory, processedRssIds, lastYoutubeScan, rssCursor, viewerBuffer] = await Promise.all([
+  const [dbAllLive, dbAllUpcoming, dbAllEnded, dbUiLive, dbUiUpcoming, dbUiEnded, dbNotificationHistory, legacyAllLive, legacyAllUpcoming, legacyAllEnded, legacyUiLive, legacyUiUpcoming, legacyUiEnded, legacyNotificationHistory, processedRssIds, lastYoutubeScan, rssCursor, viewerBuffer] = await Promise.all([
+    readVideoState(env, 'all', 'live'), readVideoState(env, 'all', 'upcoming'), relationalStore ? Promise.resolve([]) : Promise.resolve(null), readVideoState(env, 'ui', 'live'), readVideoState(env, 'ui', 'upcoming'), relationalStore ? Promise.resolve([]) : Promise.resolve(null), readNotificationHistory(env),
     getState(env, 'all_live', []), getState(env, 'all_upcoming', []), getState(env, 'all_ended', []), getState(env, 'ui_live', []), getState(env, 'ui_upcoming', []), getState(env, 'ui_ended', []), getState(env, 'notification_history', {}), getState(env, 'processed_rss_ids', []), getState(env, 'last_youtube_scan', 0), getState(env, 'rss_channel_cursor', 0), getState(env, 'viewer_buffer', {})
   ]);
+  const previousAllLive = dbAllLive ?? legacyAllLive; const previousAllUpcoming = dbAllUpcoming ?? legacyAllUpcoming; const previousAllEnded = dbAllEnded === null ? legacyAllEnded : [];
+  const previousUiLive = dbUiLive ?? legacyUiLive; const previousUiUpcoming = dbUiUpcoming ?? legacyUiUpcoming; const previousUiEnded = dbUiEnded === null ? legacyUiEnded : [];
+  const notificationHistory = dbNotificationHistory ?? legacyNotificationHistory;
   let youtubeVideos = []; let nextProcessed = processedRssIds; let nextRssCursor = rssCursor; let scannedYoutube = false;
   if (env.YOUTUBE_API_KEY && now - Number(lastYoutubeScan || 0) >= youtubeInterval(new Date(now))) {
     const holodexIds = new Set(holodexVideos.map((item) => item.videoId));
-    const rssChannels = rotatingBatch(ids, rssCursor, RSS_CHANNELS_PER_SCAN);
+    const rssBatch = prioritizedRssBatch(ids, master, rssCursor, RSS_CHANNELS_PER_SCAN);
+    const rssChannels = rssBatch.channels;
     const rss = await rssIds(rssChannels);
     const candidates = new Set(rss.filter((id) => !holodexIds.has(id) && !processedRssIds.includes(id)));
     const oneDayAgo = now - 86400000;
@@ -397,14 +546,14 @@ async function monitor(env) {
     youtubeVideos = await youtubeDetails(env, [...candidates]);
     const valid = new Set(youtubeVideos.map((item) => item.videoId));
     nextProcessed = [...new Set([...processedRssIds, ...[...candidates].filter((id) => !valid.has(id))])].slice(-5000);
-    nextRssCursor = ids.length ? (Number(rssCursor || 0) + rssChannels.length) % ids.length : 0;
+    nextRssCursor = rssBatch.nextCursor;
     scannedYoutube = true;
   }
   const all = merge([...holodexVideos, ...youtubeVideos]).filter((item) => shouldInclude(item, master));
   const favRaw = Object.keys(master.favorites).length ? await holodex(env, '/users/live', { channels: Object.keys(master.favorites).join(',') }) : [];
   const specialRaw = await holodex(env, '/live', { org: 'Hololive', max_upcoming_hours: '336' });
   const favorites = merge([...favRaw.map((raw) => video(raw)), ...specialRaw.filter((raw) => !master.excludes.includes(raw.channel?.id) && isSpecial(raw.title, master.eventKeywords)).map((raw) => ({ ...video(raw), isSpecial: true })), ...all.filter((item) => primaryTarget(item, master))]);
-  const keep = now - 2 * 86400000;
+  const keep = now - 90 * 86400000;
   const favoriteIds = new Set(Object.keys(master.favorites));
   const classify = (item) => {
     const previous = notificationHistory[item.videoId];
@@ -423,24 +572,102 @@ async function monitor(env) {
   const [allState, uiState] = await Promise.all([split(all, previousAllLive, previousAllUpcoming, previousAllEnded), split(classifiedFavorites, previousUiLive, previousUiUpcoming, previousUiEnded)]);
   await syncViewerBufferSheet(env, allState.live, now);
   // A notification provider outage must never discard a successful monitor result.
-  await setStates(env, { all_live: allState.live, all_upcoming: allState.upcoming, all_ended: allState.ended, ui_live: uiState.live, ui_upcoming: uiState.upcoming, ui_ended: uiState.ended, notification_history: notificationHistory, processed_rss_ids: nextProcessed, rss_channel_cursor: scannedYoutube ? nextRssCursor : rssCursor, last_youtube_scan: scannedYoutube ? now : lastYoutubeScan, viewer_buffer: updateViewerBuffer(viewerBuffer, allState.live, now), last_monitor_run: now, monitor_error: null });
+  const relational = relationalStore;
+  await persistVideoStates(env, { allLive: allState.live, allUpcoming: allState.upcoming, allEnded: allState.ended, uiLive: uiState.live, uiUpcoming: uiState.upcoming, uiEnded: uiState.ended }, now);
+  await recordViewerSamples(env, allState.live, now);
+  await setStates(env, { ...(relational ? {} : { all_live: allState.live, all_upcoming: allState.upcoming, all_ended: allState.ended, ui_live: uiState.live, ui_upcoming: uiState.upcoming, ui_ended: uiState.ended, notification_history: notificationHistory, viewer_buffer: updateViewerBuffer(viewerBuffer, allState.live, now) }), processed_rss_ids: nextProcessed, rss_channel_cursor: scannedYoutube ? nextRssCursor : rssCursor, last_youtube_scan: scannedYoutube ? now : lastYoutubeScan, last_monitor_run: now, monitor_error: null });
   try {
     const nextHistory = await notifyChanges(env, classifiedFavorites, notificationHistory, master);
-    if (nextHistory !== notificationHistory) await setState(env, 'notification_history', nextHistory);
+    if (nextHistory !== notificationHistory) relational ? await persistNotificationHistory(env, nextHistory, now) : await setState(env, 'notification_history', nextHistory);
   } catch (error) {
     console.error('Notification delivery failed after monitor state was saved.', error);
     await setState(env, 'notification_error', { message: error.message || 'Notification delivery failed', at: new Date(now).toISOString() });
   }
+  return { ran: true, discovered: all.length };
+}
+function isAdmin(request, env) {
+  if (!env.ADMIN_PASSWORD) return false;
+  const bearer = request.headers.get('authorization') || '';
+  return bearer === `Bearer ${env.ADMIN_PASSWORD}` || request.headers.get('x-admin-password') === env.ADMIN_PASSWORD;
+}
+function adminError(env) { return json({ error: env.ADMIN_PASSWORD ? '管理者認証が必要です。' : 'ADMIN_PASSWORD が未設定です。' }, env.ADMIN_PASSWORD ? 401 : 503); }
+async function adminApi(request, env, url) {
+  if (!isAdmin(request, env)) return adminError(env);
+  if (!await operationalReady(env)) return json({ error: 'D1 migration 0002 must be applied first.' }, 503);
+  const path = url.pathname;
+  if (request.method === 'GET' && path === '/api/admin/overview') {
+    const [channels, keywords, words, settings, notifications, runs] = await Promise.all([
+      queryAll(env, 'SELECT channel_id, name, group_name, youtube_url, is_global, is_favorite, is_excluded, priority FROM channels ORDER BY is_favorite DESC, priority DESC, name'),
+      queryAll(env, 'SELECT category, keyword FROM event_keywords ORDER BY category, keyword'), queryAll(env, 'SELECT keyword FROM exclude_words ORDER BY keyword'),
+      queryAll(env, 'SELECT setting_key, setting_value, updated_at FROM app_settings ORDER BY setting_key'),
+      queryAll(env, 'SELECT id, video_id, notification_type, subject, status, detail_json, created_at FROM notification_log ORDER BY id DESC LIMIT 100'),
+      queryAll(env, 'SELECT id, started_at, finished_at, run_type, rss_batch_start, status, discovered_count, message FROM monitor_runs ORDER BY id DESC LIMIT 100')
+    ]);
+    return json({ channels, keywords, excludeWords: words.map((row) => row.keyword), settings, notifications, runs });
+  }
+  if (request.method === 'PUT' && path === '/api/admin/channels') {
+    const body = await request.json(); const id = String(body.channelId || '').trim();
+    if (!/^UC[\w-]+$/.test(id)) return json({ error: '有効なYouTubeチャンネルIDが必要です。' }, 400);
+    await env.DB.prepare('INSERT INTO channels (channel_id, name, group_name, youtube_url, is_global, is_favorite, is_excluded, priority) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(channel_id) DO UPDATE SET name=excluded.name, group_name=excluded.group_name, youtube_url=excluded.youtube_url, is_global=excluded.is_global, is_favorite=excluded.is_favorite, is_excluded=excluded.is_excluded, priority=excluded.priority, updated_at=CURRENT_TIMESTAMP').bind(id, String(body.name || '').trim(), String(body.groupName || '').trim(), String(body.youtubeUrl || '').trim(), body.isGlobal ? 1 : 0, body.isFavorite ? 1 : 0, body.isExcluded ? 1 : 0, Math.max(0, Math.min(10, Number(body.priority || 0)))).run();
+    return json({ status: 'ok' });
+  }
+  const channelMatch = /^\/api\/admin\/channels\/([^/]+)$/.exec(path);
+  if (request.method === 'DELETE' && channelMatch) { await env.DB.prepare('DELETE FROM channels WHERE channel_id=?').bind(decodeURIComponent(channelMatch[1])).run(); return json({ status: 'ok' }); }
+  if (request.method === 'PUT' && path === '/api/admin/event-keywords') {
+    const body = await request.json(); const category = String(body.category || '').trim(); const keyword = String(body.keyword || '').trim();
+    if (!category || !keyword) return json({ error: 'カテゴリとキーワードが必要です。' }, 400);
+    await env.DB.prepare('INSERT OR IGNORE INTO event_keywords (category, keyword) VALUES (?, ?)').bind(category, keyword).run(); return json({ status: 'ok' });
+  }
+  const keywordMatch = /^\/api\/admin\/event-keywords\/(.+)\/(.+)$/.exec(path);
+  if (request.method === 'DELETE' && keywordMatch) { await env.DB.prepare('DELETE FROM event_keywords WHERE category=? AND keyword=?').bind(decodeURIComponent(keywordMatch[1]), decodeURIComponent(keywordMatch[2])).run(); return json({ status: 'ok' }); }
+  if (request.method === 'PUT' && path === '/api/admin/exclude-words') {
+    const body = await request.json(); const keyword = String(body.keyword || '').trim(); if (!keyword) return json({ error: '除外ワードが必要です。' }, 400);
+    await env.DB.prepare('INSERT OR IGNORE INTO exclude_words (keyword) VALUES (?)').bind(keyword).run(); return json({ status: 'ok' });
+  }
+  const wordMatch = /^\/api\/admin\/exclude-words\/(.+)$/.exec(path);
+  if (request.method === 'DELETE' && wordMatch) { await env.DB.prepare('DELETE FROM exclude_words WHERE keyword=?').bind(decodeURIComponent(wordMatch[1])).run(); return json({ status: 'ok' }); }
+  if (request.method === 'PUT' && path === '/api/admin/settings') {
+    const body = await request.json(); const allowed = new Set(['notifications_enabled', 'notify_new', 'notify_changed', 'notify_imminent', 'notification_email']);
+    if (body.notification_email !== undefined && body.notification_email !== '' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(body.notification_email))) return json({ error: '通知先メールアドレスの形式が正しくありません。' }, 400);
+    const entries = Object.entries(body || {}).filter(([key]) => allowed.has(key));
+    if (!entries.length) return json({ error: '変更可能な設定がありません。' }, 400);
+    await env.DB.batch(entries.map(([key, value]) => env.DB.prepare('INSERT INTO app_settings (setting_key, setting_value) VALUES (?, ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value=excluded.setting_value, updated_at=CURRENT_TIMESTAMP').bind(key, key === 'notification_email' ? String(value || '') : value ? '1' : '0')));
+    return json({ status: 'ok' });
+  }
+  return json({ error: 'Not found' }, 404);
+}
+async function notificationSettings(env) {
+  if (!await operationalReady(env)) return { notifications_enabled: true, notify_new: true, notify_changed: true, notify_imminent: true, notification_email: '' };
+  const rows = await queryAll(env, "SELECT setting_key, setting_value FROM app_settings WHERE setting_key IN ('notifications_enabled', 'notify_new', 'notify_changed', 'notify_imminent', 'notification_email')");
+  const values = Object.fromEntries(rows.map((row) => [row.setting_key, row.setting_value]));
+  return { notifications_enabled: values.notifications_enabled !== '0', notify_new: values.notify_new !== '0', notify_changed: values.notify_changed !== '0', notify_imminent: values.notify_imminent !== '0', notification_email: values.notification_email || '' };
 }
 async function api(request, env, url) {
+  if (url.pathname.startsWith('/api/admin/')) return adminApi(request, env, url);
   const legacyAction = url.searchParams.get('action');
   const legacyAll = url.pathname === '/' && url.searchParams.get('mode') === 'all';
   if (url.pathname === '/api/videos' || legacyAll) {
     const all = url.searchParams.get('mode') === 'all'; const master = await masters(env);
-    const [live, upcoming, ended, monitorError] = await Promise.all([getState(env, all ? 'all_live' : 'ui_live', []), getState(env, all ? 'all_upcoming' : 'ui_upcoming', []), getState(env, all ? 'all_ended' : 'ui_ended', []), getState(env, 'monitor_error', null)]);
+    const scope = all ? 'all' : 'ui';
+    const [dbLive, dbUpcoming, dbEnded, monitorError] = await Promise.all([readVideoState(env, scope, 'live'), readVideoState(env, scope, 'upcoming'), readVideoState(env, scope, 'ended'), getState(env, 'monitor_error', null)]);
+    const [legacyLive, legacyUpcoming, legacyEnded] = dbLive === null ? await Promise.all([getState(env, all ? 'all_live' : 'ui_live', []), getState(env, all ? 'all_upcoming' : 'ui_upcoming', []), getState(env, all ? 'all_ended' : 'ui_ended', [])]) : [[], [], []];
+    const live = dbLive ?? legacyLive; const upcoming = dbUpcoming ?? legacyUpcoming; const ended = dbEnded ?? legacyEnded;
     const videos = all ? [...live, ...upcoming] : [...live, ...upcoming, ...ended];
     if (!all && monitorError?.message) videos.unshift({ isSystemError: true, message: monitorError.message, timestamp: Date.now() });
     return json({ videos, live, upcoming, ended, favorites: Object.keys(master.favorites), ...(all ? { lastUpdate: new Date().toISOString() } : {}) });
+  }
+  const viewerMatch = /^\/api\/videos\/([^/]+)\/viewers$/.exec(url.pathname);
+  if (request.method === 'GET' && viewerMatch) {
+    if (!await operationalReady(env)) return json({ samples: [] });
+    const videoId = decodeURIComponent(viewerMatch[1]); const since = Number(url.searchParams.get('since') || Date.now() - 90 * 86400_000);
+    const samples = await queryAll(env, 'SELECT observed_at, viewers FROM viewer_samples WHERE video_id=? AND observed_at>=? ORDER BY observed_at ASC LIMIT 3000', videoId, since);
+    return json({ videoId, samples });
+  }
+  if (request.method === 'GET' && url.pathname === '/api/history') {
+    if (!await operationalReady(env)) return json({ videos: [] });
+    const limit = Math.max(1, Math.min(200, Number(url.searchParams.get('limit') || 50))); const offset = Math.max(0, Number(url.searchParams.get('offset') || 0));
+    const rows = await queryAll(env, "SELECT data_json FROM videos WHERE status='ended' AND ended_at>=? ORDER BY ended_at DESC LIMIT ? OFFSET ?", Date.now() - 90 * 86400_000, limit, offset);
+    return json({ videos: rows.flatMap((row) => { try { return [JSON.parse(row.data_json)]; } catch { return []; } }), limit, offset });
   }
   if ((url.pathname === '/calendar.ics' || url.pathname === '/') && (url.pathname === '/calendar.ics' || url.searchParams.get('mode') === 'special' || url.searchParams.get('type') === 'ical')) {
     const upcoming = await getState(env, 'ui_upcoming', []);
@@ -465,11 +692,13 @@ export default {
     context.waitUntil((async () => {
       const attemptedAt = new Date().toISOString();
       const now = Date.now();
+      let monitorRunId = null;
       // These were separate GAS triggers.  Keep them independent of monitor
       // success so a temporary API outage cannot postpone housekeeping.
       for (const [key, interval, task] of [
         ['last_buffer_sheet_cleanup', 12 * 3600_000, () => cleanupOldBufferSheet(env, now)],
-        ['last_notification_history_cleanup', 24 * 3600_000, () => autoCleanupNotificationHistory(env, now)]
+        ['last_notification_history_cleanup', 24 * 3600_000, () => autoCleanupNotificationHistory(env, now)],
+        ['last_operational_data_cleanup', 24 * 3600_000, () => cleanupOperationalData(env, now)]
       ]) {
         try { await runPeriodicMaintenance(env, key, interval, task, now); }
         catch (error) {
@@ -481,10 +710,13 @@ export default {
         // Keep a lightweight heartbeat so a failed first run is distinguishable
         // from a cron trigger that has not executed yet.
         await setState(env, 'last_monitor_attempt', { at: attemptedAt });
-        await monitor(env);
+        monitorRunId = await startMonitorRun(env, 'monitor', Number(await getState(env, 'rss_channel_cursor', 0)));
+        const result = await monitor(env);
+        await finishMonitorRun(env, monitorRunId, result?.ran ? 'success' : 'skipped', result?.discovered || 0);
         await notifyJustBeforeStart(env);
       } catch (error) {
         console.error('Scheduled monitor failed.', error);
+        await finishMonitorRun(env, monitorRunId, 'failed', 0, error.message || 'Scheduled monitor failed');
         await setState(env, 'monitor_error', {
           message: error.message || 'Scheduled monitor failed',
           at: attemptedAt

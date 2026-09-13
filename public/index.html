@@ -26,6 +26,7 @@
     </div>
 
     <div class="menu-item" onclick="loadVideos(true); toggleMenu(false);">🔄 情報を更新</div>
+    <div class="menu-item" onclick="openAdmin();">⚙️ 管理・通知設定</div>
 
     <div class="menu-label">Official / Tools</div>
     <a href="https://hololive.hololivepro.com/" target="_blank" class="menu-item">公式サイト</a>
@@ -790,9 +791,9 @@
 
     let viewersHtml = "";
     if (video.isLive && video.liveViewersFormatted) {
-      viewersHtml = `<div class="live-viewers ${isMax ? "max-live" : ""}">同接：${video.liveViewersFormatted}</div>`;
+      viewersHtml = `<div class="live-viewers ${isMax ? "max-live" : ""}">同接：${video.liveViewersFormatted} <button class="viewer-chart-btn" onclick="event.preventDefault();event.stopPropagation();openViewerChart('${video.videoId}', decodeURIComponent('${encodeURIComponent(video.title || '')}'))">📈 推移</button></div>`;
     } else if (video.isEnded && video.liveViewersFormatted) {
-      viewersHtml = `<div class="live-viewers ended-stats">最大同接： ${video.liveViewersFormatted}</div>`;
+      viewersHtml = `<div class="live-viewers ended-stats">最大同接： ${video.liveViewersFormatted} <button class="viewer-chart-btn" onclick="event.preventDefault();event.stopPropagation();openViewerChart('${video.videoId}', decodeURIComponent('${encodeURIComponent(video.title || '')}'))">📈 推移</button></div>`;
     }
 
     const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
@@ -1033,6 +1034,62 @@
   function scrollToTop() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
+  async function openViewerChart(videoId, title) {
+    const modal = document.getElementById('viewer-modal'); const root = document.getElementById('viewer-content'); modal.style.display = 'flex'; root.textContent = '同接推移を読み込み中…';
+    try {
+      const data = await fetch(`${API_BASE_URL}/videos/${encodeURIComponent(videoId)}/viewers`).then((response) => response.json());
+      const samples = data.samples || [];
+      if (!samples.length) { root.innerHTML = `<h3>${escapeAdmin(title)}</h3><p>まだ時系列データはありません。D1移行後の配信から5分ごとに記録されます。</p>`; return; }
+      const values = samples.map((item) => Number(item.viewers || 0)); const max = Math.max(...values, 1); const width = 720; const height = 240;
+      const points = samples.map((item, index) => `${Math.round(index * width / Math.max(samples.length - 1, 1))},${height - Math.round(Number(item.viewers || 0) / max * (height - 20))}`).join(' ');
+      root.innerHTML = `<h3>${escapeAdmin(title)}</h3><p>${samples.length}点 / 最大同接 ${max.toLocaleString()}</p><svg class="viewer-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="同接推移"><polyline points="${points}" fill="none" stroke="#00e5ff" stroke-width="3" vector-effect="non-scaling-stroke"/></svg><p>${new Date(samples[0].observed_at).toLocaleString('ja-JP')} 〜 ${new Date(samples.at(-1).observed_at).toLocaleString('ja-JP')}</p>`;
+    } catch (error) { root.textContent = `読み込みに失敗しました: ${error.message}`; }
+  }
+
+  let adminToken = sessionStorage.getItem('holo_admin_token') || '';
+  async function adminFetch(path, options = {}) {
+    const headers = { 'content-type': 'application/json', ...(options.headers || {}) };
+    if (adminToken) headers.authorization = `Bearer ${adminToken}`;
+    const response = await fetch(`${API_BASE_URL}/admin/${path}`, { ...options, headers });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || '管理APIへの接続に失敗しました。');
+    return data;
+  }
+  function closeAdmin() { document.getElementById('admin-modal').style.display = 'none'; }
+  async function openAdmin() {
+    toggleMenu(false);
+    if (!adminToken) {
+      adminToken = window.prompt('管理パスワードを入力してください');
+      if (!adminToken) return;
+      sessionStorage.setItem('holo_admin_token', adminToken);
+    }
+    const modal = document.getElementById('admin-modal'); modal.style.display = 'flex';
+    const root = document.getElementById('admin-content'); root.textContent = '読み込み中…';
+    try { renderAdmin(await adminFetch('overview')); }
+    catch (error) { sessionStorage.removeItem('holo_admin_token'); adminToken = ''; root.innerHTML = `<p class="admin-error">${escapeAdmin(error.message)}</p><p>CloudflareのSecret <code>ADMIN_PASSWORD</code> を設定後、もう一度開いてください。</p>`; }
+  }
+  function escapeAdmin(value) { const node = document.createElement('span'); node.textContent = String(value || ''); return node.innerHTML; }
+  function adminSetting(data, key, fallback = true) { const row = data.settings.find((item) => item.setting_key === key); return row ? row.setting_value === '1' : fallback; }
+  function renderAdmin(data) {
+    const root = document.getElementById('admin-content');
+    const settings = [['notifications_enabled','通知を有効化'], ['notify_new','新規配信'], ['notify_changed','配信変更'], ['notify_imminent','開始直前']];
+    root.innerHTML = `
+      <section><h3>通知設定</h3><div class="admin-toggles">${settings.map(([key,label]) => `<label><input type="checkbox" data-setting="${key}" ${adminSetting(data,key) ? 'checked' : ''}> ${label}</label>`).join('')}<label>送信先 <input data-notification-email type="email" value="${escapeAdmin(data.settings.find((item) => item.setting_key === 'notification_email')?.setting_value || '')}" placeholder="未設定時はCloudflare設定を使用"></label></div><button onclick="saveAdminSettings()">通知設定を保存</button></section>
+      <section><h3>チャンネルを追加・更新</h3><form onsubmit="saveAdminChannel(event)" class="admin-form"><input name="channelId" placeholder="UCから始まるチャンネルID" required><input name="name" placeholder="表示名" required><input name="groupName" placeholder="グループ（任意）"><input name="youtubeUrl" placeholder="YouTube URL（任意）"><label>全体監視 <input type="checkbox" name="isGlobal" checked></label><label>お気に入り <input type="checkbox" name="isFavorite"></label><label>除外 <input type="checkbox" name="isExcluded"></label><label>優先度 <input type="number" name="priority" min="0" max="10" value="0"></label><button>保存</button></form></section>
+      <section><h3>イベントキーワード</h3><form onsubmit="saveAdminKeyword(event)" class="admin-form"><input name="category" placeholder="カテゴリ（例：記念）" required><input name="keyword" placeholder="キーワード" required><button>追加</button></form><div class="admin-chips">${data.keywords.map((x) => `<span>${escapeAdmin(x.category)}：${escapeAdmin(x.keyword)} <button onclick="deleteAdmin('event-keywords/${encodeURIComponent(x.category)}/${encodeURIComponent(x.keyword)}')">×</button></span>`).join('')}</div></section>
+      <section><h3>除外ワード</h3><form onsubmit="saveExcludeWord(event)" class="admin-form"><input name="keyword" placeholder="除外ワード" required><button>追加</button></form><div class="admin-chips">${data.excludeWords.map((x) => `<span>${escapeAdmin(x)} <button onclick="deleteAdmin('exclude-words/${encodeURIComponent(x)}')">×</button></span>`).join('')}</div></section>
+      <section><h3>チャンネル一覧</h3><div class="admin-list">${data.channels.map((x) => `<div><strong>${escapeAdmin(x.name || x.channel_id)}</strong><small>${escapeAdmin(x.channel_id)} / 全体:${x.is_global ? '○' : '－'} / ★:${x.is_favorite ? '○' : '－'} / 優先:${x.priority}</small><button onclick="deleteAdmin('channels/${encodeURIComponent(x.channel_id)}')">削除</button></div>`).join('')}</div></section>
+      <section><h3>直近の監視実行</h3><div class="admin-log">${data.runs.map((x) => `<div>${new Date(x.started_at).toLocaleString('ja-JP')}｜${escapeAdmin(x.status)}｜検出 ${x.discovered_count}件 ${escapeAdmin(x.message || '')}</div>`).join('') || 'まだ記録はありません'}</div></section>
+      <section><h3>直近の通知</h3><div class="admin-log">${data.notifications.map((x) => `<div>${new Date(x.created_at).toLocaleString('ja-JP')}｜${escapeAdmin(x.notification_type)}｜${escapeAdmin(x.status)}｜${escapeAdmin(x.subject)}</div>`).join('') || 'まだ記録はありません'}</div></section>`;
+  }
+  async function refreshAdmin() { renderAdmin(await adminFetch('overview')); }
+  async function saveAdminSettings() { const body = {}; document.querySelectorAll('[data-setting]').forEach((input) => { body[input.dataset.setting] = input.checked; }); body.notification_email = document.querySelector('[data-notification-email]').value.trim(); await adminFetch('settings', { method: 'PUT', body: JSON.stringify(body) }); await refreshAdmin(); }
+  async function saveAdminChannel(event) { event.preventDefault(); const form = new FormData(event.target); const body = Object.fromEntries(form.entries()); ['isGlobal','isFavorite','isExcluded'].forEach((key) => body[key] = form.get(key) === 'on'); await adminFetch('channels', { method: 'PUT', body: JSON.stringify(body) }); await refreshAdmin(); }
+  async function saveAdminKeyword(event) { event.preventDefault(); const form = new FormData(event.target); await adminFetch('event-keywords', { method: 'PUT', body: JSON.stringify(Object.fromEntries(form.entries())) }); await refreshAdmin(); }
+  async function saveExcludeWord(event) { event.preventDefault(); const form = new FormData(event.target); await adminFetch('exclude-words', { method: 'PUT', body: JSON.stringify(Object.fromEntries(form.entries())) }); await refreshAdmin(); }
+  async function deleteAdmin(path) { if (!window.confirm('削除しますか？')) return; await adminFetch(path, { method: 'DELETE' }); await refreshAdmin(); }
 </script>
+<div id="admin-modal" class="admin-modal" style="display:none"><div class="admin-panel"><button class="admin-close" onclick="closeAdmin()">×</button><h2>管理・通知設定</h2><p>この画面の変更はD1へ保存され、Google Sheetsは通常の監視では読み込みません。</p><div id="admin-content"></div></div></div>
+<div id="viewer-modal" class="admin-modal" style="display:none" onclick="if(event.target===this)this.style.display='none'"><div class="admin-panel"><button class="admin-close" onclick="document.getElementById('viewer-modal').style.display='none'">×</button><div id="viewer-content"></div></div></div>
 </body>
 </html>
