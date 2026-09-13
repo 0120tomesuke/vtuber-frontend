@@ -1385,3 +1385,93 @@ body.menu-open #side-menu {
   .duration-badge { right: 9px; bottom: 9px; padding: 4px 6px; border-radius: 6px; background: rgba(2, 6, 23, .8); font-size: 10px; }
   .viewer-chart-btn { padding: 1px 4px; border-color: rgba(255,255,255,.48); font-size: 13px; line-height: 1; }
 }
+
+/* PC CARD REFRESH: readability pass. Kept separate from the experimental
+   block above so this design can be reverted as one Git commit. */
+@media screen and (min-width: 769px) {
+  .card-thumb::after { display: none !important; }
+  .card:hover .card-thumb img { transform: none !important; }
+
+  .card-body {
+    min-height: 136px !important;
+    padding: 10px 12px !important;
+    display: flex !important;
+    align-items: stretch !important;
+    justify-content: flex-start !important;
+    gap: 5px !important;
+  }
+  .card-time {
+    top: -37px !important;
+    right: 10px !important;
+    padding: 6px 9px !important;
+    border-color: rgba(255,255,255,.35) !important;
+    background: rgba(2, 6, 23, .58) !important;
+    backdrop-filter: blur(3px);
+    color: #fff !important;
+    font-size: 13px !important;
+    font-weight: 900 !important;
+  }
+  .label-live, .label-ended, .label-upcoming {
+    background: rgba(225, 29, 72, .82) !important;
+    backdrop-filter: blur(3px);
+  }
+  .label-ended { background: rgba(15, 23, 42, .72) !important; }
+  .label-upcoming { background: rgba(37, 99, 235, .78) !important; }
+
+  .card-channel {
+    display: block !important;
+    min-height: 18px;
+    margin: 0 !important;
+    color: #93c5fd !important;
+    font-size: 12px !important;
+    line-height: 1.25 !important;
+  }
+  .card-title {
+    display: -webkit-box !important;
+    min-height: 57px;
+    font-size: 14px !important;
+    line-height: 1.38 !important;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+  }
+  .card-guests {
+    position: static !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: flex-start !important;
+    width: 100% !important;
+    min-height: 26px;
+    margin: 0 !important;
+    gap: 0 !important;
+    overflow: visible !important;
+  }
+  .guest-caption {
+    margin-right: 6px;
+    color: #94a3b8;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: .08em;
+  }
+  .card-guests img, .card-guests .owner-icon-pc, .card-guests .guest-icon {
+    width: 24px !important;
+    height: 24px !important;
+    margin: 0 0 0 -7px !important;
+    border: 1.5px solid #0b1222 !important;
+  }
+  .card-guests img:first-of-type { margin-left: 0 !important; border-color: #38bdf8 !important; }
+  .card-keyword { position: static !important; display: inline-block; width: fit-content; padding: 2px 6px !important; margin: 0 !important; font-size: 10px !important; }
+
+  .live-viewers {
+    position: static !important;
+    align-self: flex-start;
+    order: 6;
+    min-height: 27px;
+    padding: 5px 8px !important;
+    margin: 0 !important;
+    background: rgba(30, 41, 59, .82) !important;
+    border-color: rgba(148, 163, 184, .45) !important;
+  }
+  .live-viewers.max-live { background: rgba(136, 19, 55, .76) !important; }
+  .live-viewers.ended-stats { margin: 0 !important; }
+  .duration-badge { background: rgba(2, 6, 23, .55); backdrop-filter: blur(2px); }
+}

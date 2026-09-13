@@ -787,7 +787,7 @@
       return `<img src="${icon}" class="guest-icon" title="${name || '不明'}" alt="">`;
     }).join("");
 
-    const guestHtml = `<div class="card-guests">${ownerIconPC}${guestIcons}</div>`;
+    const guestHtml = `<div class="card-guests">${guestIcons ? '<span class="guest-caption">出演</span>' : ''}${ownerIconPC}${guestIcons}</div>`;
     const keywordHtml = video.keyword ? `<div class="card-keyword">${video.keyword}</div>` : "";
 
     let viewersHtml = "";
