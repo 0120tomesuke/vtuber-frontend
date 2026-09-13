@@ -13,7 +13,7 @@
     {
       "binding": "DB",
       "database_name": "hololive-live-monitor",
-      "database_id": "REPLACE_WITH_D1_DATABASE_ID",
+      "database_id": "73ede770-9b0c-489d-b80f-0b0a3966ca16",
       "migrations_dir": "migrations"
     }
   ]
