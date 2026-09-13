@@ -141,8 +141,15 @@ async function monitor(env) {
     return { live, upcoming, ended };
   };
   const [allState, uiState] = await Promise.all([split(all, previousAllLive, previousAllUpcoming, previousAllEnded), split(classifiedFavorites, previousUiLive, previousUiUpcoming, previousUiEnded)]);
-  const nextHistory = await notifyChanges(env, classifiedFavorites, notificationHistory);
-  await setStates(env, { all_live: allState.live, all_upcoming: allState.upcoming, all_ended: allState.ended, ui_live: uiState.live, ui_upcoming: uiState.upcoming, ui_ended: uiState.ended, notification_history: nextHistory, processed_rss_ids: nextProcessed, last_youtube_scan: scannedYoutube ? now : lastYoutubeScan, last_monitor_run: now });
+  // A notification provider outage must never discard a successful monitor result.
+  await setStates(env, { all_live: allState.live, all_upcoming: allState.upcoming, all_ended: allState.ended, ui_live: uiState.live, ui_upcoming: uiState.upcoming, ui_ended: uiState.ended, notification_history: notificationHistory, processed_rss_ids: nextProcessed, last_youtube_scan: scannedYoutube ? now : lastYoutubeScan, last_monitor_run: now });
+  try {
+    const nextHistory = await notifyChanges(env, classifiedFavorites, notificationHistory);
+    if (nextHistory !== notificationHistory) await setState(env, 'notification_history', nextHistory);
+  } catch (error) {
+    console.error('Notification delivery failed after monitor state was saved.', error);
+    await setState(env, 'notification_error', { message: error.message || 'Notification delivery failed', at: new Date(now).toISOString() });
+  }
 }
 async function api(request, env, url) {
   if (url.pathname === '/api/videos') { const all = url.searchParams.get('mode') === 'all'; const master = await masters(env); const [live, upcoming, ended] = await Promise.all([getState(env, all ? 'all_live' : 'ui_live', []), getState(env, all ? 'all_upcoming' : 'ui_upcoming', []), getState(env, all ? 'all_ended' : 'ui_ended', [])]); return json({ videos: all ? [...live, ...upcoming] : [...live, ...upcoming, ...ended], live, upcoming, ended, favorites: Object.keys(master.favorites), ...(all ? { lastUpdate: new Date().toISOString() } : {}) }); }
