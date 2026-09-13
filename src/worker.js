@@ -160,5 +160,21 @@ async function api(request, env, url) {
 }
 export default {
   async fetch(request, env) { const url = new URL(request.url); try { if (url.pathname === '/health') return json({ status: 'ok' }); if (url.pathname.startsWith('/api/') || url.pathname === '/calendar.ics') { const response = await api(request, env, url); if (response) return response; } return env.ASSETS.fetch(request); } catch (error) { return json({ error: error.message || 'Internal server error' }, 500); } },
-  async scheduled(event, env, context) { context.waitUntil(monitor(env)); }
+  async scheduled(event, env, context) {
+    context.waitUntil((async () => {
+      const attemptedAt = new Date().toISOString();
+      try {
+        // Keep a lightweight heartbeat so a failed first run is distinguishable
+        // from a cron trigger that has not executed yet.
+        await setState(env, 'last_monitor_attempt', { at: attemptedAt });
+        await monitor(env);
+      } catch (error) {
+        console.error('Scheduled monitor failed.', error);
+        await setState(env, 'monitor_error', {
+          message: error.message || 'Scheduled monitor failed',
+          at: attemptedAt
+        });
+      }
+    })());
+  }
 };
