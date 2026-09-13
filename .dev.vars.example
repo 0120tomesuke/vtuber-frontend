@@ -6,5 +6,12 @@ GOOGLE_SERVICE_ACCOUNT_JSON=
 RESEND_API_KEY=
 EMAIL_FROM=
 NOTIFICATION_EMAIL=
+# Optional free Gmail API delivery. When all four values are set, Gmail is
+# used before Resend. The OAuth refresh token is created with
+# node scripts/authorize-gmail.mjs and must stay secret.
+GMAIL_OAUTH_CLIENT_ID=
+GMAIL_OAUTH_CLIENT_SECRET=
+GMAIL_OAUTH_REFRESH_TOKEN=
+GMAIL_SENDER_EMAIL=
 # Required only for the in-app management screen. Use a long unique value.
 ADMIN_PASSWORD=

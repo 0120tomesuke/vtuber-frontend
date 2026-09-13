@@ -504,6 +504,64 @@ async function resendSend(env, payload) {
   const detail = (await response.text()).replaceAll(/\s+/g, ' ').slice(0, 500);
   throw new Error(`Resend failed: ${response.status}${detail ? ` ${detail}` : ''}`);
 }
+function base64Utf8(value) {
+  const bytes = new TextEncoder().encode(String(value || ''));
+  let binary = '';
+  for (let index = 0; index < bytes.length; index += 0x8000) binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+  return btoa(binary);
+}
+function gmailReady(env) {
+  return Boolean(env.GMAIL_OAUTH_CLIENT_ID && env.GMAIL_OAUTH_CLIENT_SECRET && env.GMAIL_OAUTH_REFRESH_TOKEN && env.GMAIL_SENDER_EMAIL);
+}
+async function gmailAccessToken(env) {
+  const body = new URLSearchParams({
+    client_id: env.GMAIL_OAUTH_CLIENT_ID,
+    client_secret: env.GMAIL_OAUTH_CLIENT_SECRET,
+    refresh_token: env.GMAIL_OAUTH_REFRESH_TOKEN,
+    grant_type: 'refresh_token'
+  });
+  const response = await fetch('https://oauth2.googleapis.com/token', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body });
+  const detail = await response.text();
+  if (!response.ok) throw new Error(`Gmail OAuth failed: ${response.status} ${detail.slice(0, 500)}`);
+  const token = JSON.parse(detail).access_token;
+  if (!token) throw new Error('Gmail OAuth failed: access token was not returned');
+  return token;
+}
+function gmailMime({ senderName, senderEmail, recipient, subject, html: htmlBody }) {
+  const header = (value) => `=?UTF-8?B?${base64Utf8(value)}?=`;
+  const address = senderName ? `${header(senderName)} <${senderEmail}>` : senderEmail;
+  const body = base64Utf8(htmlBody).match(/.{1,76}/g)?.join('\r\n') || '';
+  return [
+    `From: ${address}`,
+    `To: ${recipient}`,
+    `Subject: ${header(subject)}`,
+    'MIME-Version: 1.0',
+    'Content-Type: text/html; charset=UTF-8',
+    'Content-Transfer-Encoding: base64',
+    '',
+    body
+  ].join('\r\n');
+}
+async function gmailSend(env, { senderName, recipient, subject, html: htmlBody }) {
+  const token = await gmailAccessToken(env);
+  const mime = gmailMime({ senderName, senderEmail: env.GMAIL_SENDER_EMAIL, recipient, subject, html: htmlBody });
+  const raw = base64Utf8(mime).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
+  const response = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ raw })
+  });
+  const detail = await response.text();
+  if (!response.ok) throw new Error(`Gmail send failed: ${response.status} ${detail.slice(0, 500)}`);
+  return true;
+}
+async function sendMail(env, { senderName, recipient, subject, html: htmlBody }) {
+  // Gmail is free for this personal-notification workload. Keep Resend as a
+  // fallback so existing configurations do not suddenly stop working.
+  if (gmailReady(env)) return gmailSend(env, { senderName, recipient, subject, html: htmlBody });
+  if (env.RESEND_API_KEY && env.EMAIL_FROM) return resendSend(env, { from: `${senderName} <${env.EMAIL_FROM}>`, to: [recipient], subject, html: htmlBody });
+  return false;
+}
 async function sendAndLog(env, type, subject, items, send) {
   try {
     const sent = await send();
@@ -516,8 +574,8 @@ async function sendAndLog(env, type, subject, items, send) {
 }
 async function sendEmail(env, subject, items, senderName, master) {
   const recipient = (await notificationSettings(env)).notification_email || env.NOTIFICATION_EMAIL;
-  if (!items.length || !env.RESEND_API_KEY || !env.EMAIL_FROM || !recipient) return false;
-  return resendSend(env, { from: `${senderName} <${env.EMAIL_FROM}>`, to: [recipient], subject, html: notificationHtml(items, master) });
+  if (!items.length || !recipient) return false;
+  return sendMail(env, { senderName, recipient, subject, html: notificationHtml(items, master) });
 }
 
 function updateNotificationHistory(history, items) {
@@ -555,8 +613,8 @@ function startNotificationHtml(items) {
 }
 async function sendStartEmail(env, subject, items, senderName) {
   const recipient = (await notificationSettings(env)).notification_email || env.NOTIFICATION_EMAIL;
-  if (!items.length || !env.RESEND_API_KEY || !env.EMAIL_FROM || !recipient) return false;
-  return resendSend(env, { from: `${senderName} <${env.EMAIL_FROM}>`, to: [recipient], subject, html: startNotificationHtml(items) });
+  if (!items.length || !recipient) return false;
+  return sendMail(env, { senderName, recipient, subject, html: startNotificationHtml(items) });
 }
 function imminentReason(item, master) {
   const favoriteIds = new Set(Object.keys(master.favorites));
