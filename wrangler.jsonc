@@ -1,20 +1,31 @@
 {
-  "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "hololive-live-monitor",
-  "main": "src/worker.js",
-  "compatibility_date": "2026-09-13",
-  "assets": {
-    "directory": "./public",
-    "binding": "ASSETS",
-    "run_worker_first": ["/api/*", "/calendar.ics"]
-  },
-  "triggers": { "crons": ["* * * * *"] },
-  "d1_databases": [
-    {
-      "binding": "DB",
-      "database_name": "hololive-live-monitor",
-      "database_id": "73ede770-9b0c-489d-b80f-0b0a3966ca16",
-      "migrations_dir": "migrations"
-    }
-  ]
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "hololive-live-monitor",
+	"main": "src/worker.js",
+	"compatibility_date": "2026-09-13",
+	"assets": {
+		"directory": "./public",
+		"binding": "ASSETS",
+		"run_worker_first": [
+			"/api/*",
+			"/calendar.ics"
+		]
+	},
+	"triggers": {
+		"crons": [
+			"* * * * *"
+		]
+	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "hololive-live-monitor",
+			"database_id": "73ede770-9b0c-489d-b80f-0b0a3966ca16",
+			"migrations_dir": "migrations"
+		}
+	],
+	"vars": {
+		"EMAIL_FROM": "onboarding@resend.dev",
+		"NOTIFICATION_EMAIL": "0120tomesuke@gmail.com"
+	}
 }
