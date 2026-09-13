@@ -3,6 +3,10 @@ const HOLODEX = 'https://holodex.net/api/v2';
 // Workers on the free plan limits the number of subrequests per invocation.
 // RSS is a supplemental source, so scan it in small rotating batches.
 const RSS_CHANNELS_PER_SCAN = 20;
+// RSS discovers newly published videos. Holodex remains responsible for
+// collaboration metadata, which can be added after a stream has started.
+// Keep this modest because the free Worker also performs 20 RSS requests.
+const HOLODEX_GUEST_DETAILS_PER_RUN = { live: 4, upcoming: 3, ended: 1 };
 
 const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json; charset=utf-8' } });
 const esc = (value) => String(value || '').replaceAll('\\', '\\\\').replaceAll(';', '\\;').replaceAll(',', '\\,').replaceAll('\n', '\\n');
@@ -217,20 +221,80 @@ function video(raw, globalIds, talentMap) {
   const start = raw.start_actual || raw.actual_start || raw.start_scheduled || raw.available_at;
   const external = globalIds && !globalIds.has(raw.channel?.id);
   const guests = (raw.mentions || []).filter((mention) => globalIds?.has(mention.id)).map((mention) => ({ name: normalizedTalentName(mention.name, talentMap || {}), icon: mention.photo || '' })).filter((guest, index, list) => list.findIndex((item) => item.name === guest.name) === index);
-  return { videoId: raw.id, title: raw.title || '', channelTitle: external ? `(外) ${raw.channel?.name || ''}` : raw.channel?.name || '', channelId: raw.channel?.id || '', channelIcon: raw.channel?.photo || '', thumbnail: `https://i.ytimg.com/vi/${raw.id}/hqdefault.jpg`, videoUrl: `https://www.youtube.com/watch?v=${raw.id}`, viewers: raw.live_viewers || 0, liveViewersFormatted: raw.live_viewers ? Number(raw.live_viewers).toLocaleString() : null, startTimeRaw: start, startTime: start ? format(start) : '未定', dateKey: start ? format(start, true) : '', isLive: raw.status === 'live', isEnded: raw.status === 'past', durationLabel: formatDuration(raw.duration), mentions: raw.mentions || [], guests, source: 'holodex', priority: 1 };
+  return { videoId: raw.id, title: raw.title || '', channelTitle: external ? `(外) ${raw.channel?.name || ''}` : raw.channel?.name || '', channelId: raw.channel?.id || '', channelIcon: raw.channel?.photo || '', thumbnail: `https://i.ytimg.com/vi/${raw.id}/hqdefault.jpg`, videoUrl: `https://www.youtube.com/watch?v=${raw.id}`, viewers: raw.live_viewers || 0, liveViewersFormatted: raw.live_viewers ? Number(raw.live_viewers).toLocaleString() : null, startTimeRaw: start, startTime: start ? format(start) : '未定', dateKey: start ? format(start, true) : '', isLive: raw.status === 'live', isEnded: raw.status === 'past', durationLabel: formatDuration(raw.duration), mentions: raw.mentions || [], mentionsKnown: Array.isArray(raw.mentions), guests, source: 'holodex', priority: 1 };
 }
 async function holodex(env, path, parameters) {
   const url = new URL(`${HOLODEX}${path}`); Object.entries(parameters || {}).forEach(([key, value]) => url.searchParams.set(key, value));
   const response = await fetch(url, { headers: { 'X-APIKEY': env.HOLODEX_API_KEY } }); if (!response.ok) throw new Error(`Holodex failed: ${response.status}`); return response.json();
 }
-function merge(videos) { const map = new Map(); videos.filter(Boolean).forEach((item) => { const prior = map.get(item.videoId); if (!prior || (item.priority || 1) < (prior.priority || 1)) map.set(item.videoId, { ...item, isSpecial: item.isSpecial || prior?.isSpecial }); }); return [...map.values()]; }
+function mergePeople(...lists) {
+  const map = new Map();
+  lists.flat().filter(Boolean).forEach((person) => {
+    const key = String(person.id || person.name || '').trim();
+    if (key) map.set(key, { ...map.get(key), ...person });
+  });
+  return [...map.values()];
+}
+function merge(videos) {
+  const map = new Map();
+  videos.filter(Boolean).forEach((item) => {
+    const prior = map.get(item.videoId);
+    if (!prior) { map.set(item.videoId, item); return; }
+    // Equal-priority Holodex data is newer when it arrives later in the
+    // monitor run. Preserve the union of guests either way.
+    const preferIncoming = (item.priority || 1) <= (prior.priority || 1);
+    const preferred = preferIncoming ? item : prior;
+    const mentionSource = preferIncoming && item.mentionsKnown ? item : prior.mentionsKnown ? prior : null;
+    map.set(item.videoId, {
+      ...preferred,
+      isSpecial: Boolean(item.isSpecial || prior.isSpecial),
+      mentions: mentionSource ? mentionSource.mentions : mergePeople(prior.mentions || [], item.mentions || []),
+      guests: mentionSource ? mentionSource.guests : mergePeople(prior.guests || [], item.guests || []),
+      mentionsKnown: Boolean(prior.mentionsKnown || item.mentionsKnown)
+    });
+  });
+  return [...map.values()];
+}
+function rotateItems(items, cursor, limit) {
+  const unique = [...new Map(items.filter((item) => item?.videoId).map((item) => [item.videoId, item])).values()];
+  if (!unique.length || !limit) return { items: [], nextCursor: 0 };
+  const start = ((Number(cursor) || 0) % unique.length + unique.length) % unique.length;
+  const selected = Array.from({ length: Math.min(limit, unique.length) }, (_, index) => unique[(start + index) % unique.length]);
+  return { items: selected, nextCursor: (start + selected.length) % unique.length };
+}
+async function refreshTrackedGuests(env, states, globalIds, talentMap, cursors) {
+  if (!env.HOLODEX_API_KEY) return { videos: [], cursors };
+  const live = rotateItems(states.live || [], cursors.live, HOLODEX_GUEST_DETAILS_PER_RUN.live);
+  const upcoming = rotateItems([...(states.upcoming || [])].sort((a, b) => new Date(a.startTimeRaw) - new Date(b.startTimeRaw)), cursors.upcoming, HOLODEX_GUEST_DETAILS_PER_RUN.upcoming);
+  const ended = rotateItems([...(states.ended || [])].sort((a, b) => new Date(b.startTimeRaw) - new Date(a.startTimeRaw)), cursors.ended, HOLODEX_GUEST_DETAILS_PER_RUN.ended);
+  const targets = [...live.items, ...upcoming.items, ...ended.items];
+  const videos = [];
+  await mapLimit(targets, 4, async (item) => {
+    try {
+      const raw = await holodex(env, `/videos/${encodeURIComponent(item.videoId)}`, { include: 'mentions' });
+      if (raw?.id) videos.push({ ...video(raw, globalIds, talentMap), isSpecial: Boolean(item.isSpecial) });
+    } catch (error) {
+      // A deleted/private video must not abort the rest of this monitor run.
+      console.warn('Holodex guest refresh failed.', item.videoId, error.message || error);
+    }
+  });
+  return { videos, cursors: { live: live.nextCursor, upcoming: upcoming.nextCursor, ended: ended.nextCursor } };
+}
 function primaryTarget(item, master) { const ids = new Set(Object.keys(master.favorites)); return Boolean(ids.has(item.channelId) || item.isSpecial || isSpecial(item.title, master.eventKeywords) || (item.mentions || []).some((mention) => ids.has(mention.id))); }
 function target(item, master) { if (primaryTarget(item, master)) return true; return Object.values(master.favorites).some((favorite) => favorite.name && item.title?.includes(favorite.name)); }
 function shouldInclude(item, master) { if (Object.hasOwn(master.favorites, item.channelId)) return true; const title = normalizeTitle(item.title); if ((master.excludeWords || []).some((word) => title.includes(normalizeTitle(word)))) return false; return !(master.excludes || []).includes(item.channelId); }
 function isWithin72Hours(value, now) { const diff = new Date(value).getTime() - now; return diff >= -3 * 3600_000 && diff <= 72 * 3600_000; }
 function normalizeTitle(value) { return String(value || '').normalize('NFKC').replace(/\s+/g, ' ').trim().toLowerCase(); }
 function distance(left, right) { const a = String(left || ''); const b = String(right || ''); if (!a || !b) return Infinity; const row = Array.from({ length: b.length + 1 }, (_, i) => i); for (let i = 1; i <= a.length; i += 1) { let previous = row[0]; row[0] = i; for (let j = 1; j <= b.length; j += 1) { const current = row[j]; row[j] = Math.min(row[j] + 1, row[j - 1] + 1, previous + (a[i - 1] === b[j - 1] ? 0 : 1)); previous = current; } } return row[b.length]; }
-function changedFields(item, previous) { if (!previous) return []; const changes = []; if (distance(normalizeTitle(item.title), normalizeTitle(previous.title)) >= 3) changes.push('タイトル'); if (new Date(item.startTimeRaw).getTime() !== new Date(previous.startTimeRaw).getTime()) changes.push('開始時刻'); return changes; }
+function changedFields(item, previous) {
+  if (!previous) return [];
+  const changes = [];
+  if (distance(normalizeTitle(item.title), normalizeTitle(previous.title)) >= 3) changes.push('タイトル');
+  if (new Date(item.startTimeRaw).getTime() !== new Date(previous.startTimeRaw).getTime()) changes.push('開始時刻');
+  const signature = (mentions) => [...new Set((mentions || []).map((mention) => String(mention.id || mention.name || '')).filter(Boolean))].sort().join(',');
+  if (signature(item.mentions) !== signature(previous.mentions)) changes.push('ゲスト');
+  return changes;
+}
 function isoDurationSeconds(value) { const match = /^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/.exec(value || ''); return match ? Number(match[1] || 0) * 3600 + Number(match[2] || 0) * 60 + Number(match[3] || 0) : 0; }
 function tokyoHour(date = new Date()) { return Number(new Intl.DateTimeFormat('en-US', { timeZone: TOKYO, hour: '2-digit', hourCycle: 'h23' }).format(date)); }
 function youtubeInterval() { return 55_000; }
@@ -360,6 +424,7 @@ function notificationTarget(item, master) {
 
 function shouldSendChanged(item, now) {
   if (item.changedFields?.includes('タイトル')) return true;
+  if (item.changedFields?.includes('ゲスト')) return true;
   if (!item.changedFields?.includes('開始時刻') || !item.startTimeRaw) return true;
   return new Date(item.startTimeRaw).getTime() > now;
 }
@@ -371,6 +436,7 @@ function subjectSummary(items, kind, talentMap) {
     if (kind === 'new') return `${names[0]} 「${item.title}」`;
     if (item.changedFields?.includes('開始時刻')) return `${names[0]} 開始時間変更 (${item.startTime})`;
     if (item.changedFields?.includes('タイトル')) return `${names[0]} タイトル変更`;
+    if (item.changedFields?.includes('ゲスト')) return `${names[0]} ゲスト情報更新`;
     return `${names[0]} 更新`;
   }
   const uniqueNames = [...new Set(names)].slice(0, 2);
@@ -394,6 +460,10 @@ function changeDetail(item) {
   const lines = [];
   if (item.changedFields.includes('タイトル')) lines.push(`タイトル: 「${previous.title || ''}」 → 「${item.title}」`);
   if (item.changedFields.includes('開始時刻')) lines.push(`開始時刻: ${format(previous.startTimeRaw)} → ${item.startTime}`);
+  if (item.changedFields.includes('ゲスト')) {
+    const names = (mentions) => [...new Set((mentions || []).map((mention) => mention.name).filter(Boolean))].join('・') || 'なし';
+    lines.push(`ゲスト: ${names(previous.mentions)} → ${names(item.mentions)}`);
+  }
   return lines.length ? `<div style="font-size:14px;color:#d00;margin:6px 0 10px;line-height:1.4">${lines.map(html).join('<br>')}</div>` : '';
 }
 
@@ -529,13 +599,16 @@ async function monitor(env) {
   const own = await Promise.all(chunks.map((chunk) => holodex(env, '/live', { channels: chunk.join(','), include: 'mentions', max_upcoming_hours: '336' })));
   const external = await holodex(env, '/live', { org: 'Hololive', include: 'mentions', limit: '50', max_upcoming_hours: '336' });
   const holodexVideos = [...own.flat(), ...external].map((raw) => video(raw, globalIds, master.talentMap)).filter((item) => (globalIds.has(item.channelId) || item.guests.length) && shouldInclude(item, master));
-  const [dbAllLive, dbAllUpcoming, dbAllEnded, dbUiLive, dbUiUpcoming, dbUiEnded, dbNotificationHistory, legacyAllLive, legacyAllUpcoming, legacyAllEnded, legacyUiLive, legacyUiUpcoming, legacyUiEnded, legacyNotificationHistory, processedRssIds, lastYoutubeScan, rssCursor, viewerBuffer] = await Promise.all([
+  const [dbAllLive, dbAllUpcoming, dbAllEnded, dbUiLive, dbUiUpcoming, dbUiEnded, dbNotificationHistory, legacyAllLive, legacyAllUpcoming, legacyAllEnded, legacyUiLive, legacyUiUpcoming, legacyUiEnded, legacyNotificationHistory, processedRssIds, lastYoutubeScan, rssCursor, viewerBuffer, guestRefreshCursors] = await Promise.all([
     readVideoState(env, 'all', 'live'), readVideoState(env, 'all', 'upcoming'), relationalStore ? Promise.resolve([]) : Promise.resolve(null), readVideoState(env, 'ui', 'live'), readVideoState(env, 'ui', 'upcoming'), relationalStore ? Promise.resolve([]) : Promise.resolve(null), readNotificationHistory(env),
-    getState(env, 'all_live', []), getState(env, 'all_upcoming', []), getState(env, 'all_ended', []), getState(env, 'ui_live', []), getState(env, 'ui_upcoming', []), getState(env, 'ui_ended', []), getState(env, 'notification_history', {}), getState(env, 'processed_rss_ids', []), getState(env, 'last_youtube_scan', 0), getState(env, 'rss_channel_cursor', 0), getState(env, 'viewer_buffer', {})
+    getState(env, 'all_live', []), getState(env, 'all_upcoming', []), getState(env, 'all_ended', []), getState(env, 'ui_live', []), getState(env, 'ui_upcoming', []), getState(env, 'ui_ended', []), getState(env, 'notification_history', {}), getState(env, 'processed_rss_ids', []), getState(env, 'last_youtube_scan', 0), getState(env, 'rss_channel_cursor', 0), getState(env, 'viewer_buffer', {}), getState(env, 'holodex_guest_refresh_cursor', { live: 0, upcoming: 0, ended: 0 })
   ]);
   const previousAllLive = dbAllLive ?? legacyAllLive; const previousAllUpcoming = dbAllUpcoming ?? legacyAllUpcoming; const previousAllEnded = dbAllEnded === null ? legacyAllEnded : [];
   const previousUiLive = dbUiLive ?? legacyUiLive; const previousUiUpcoming = dbUiUpcoming ?? legacyUiUpcoming; const previousUiEnded = dbUiEnded === null ? legacyUiEnded : [];
   const notificationHistory = dbNotificationHistory ?? legacyNotificationHistory;
+  // Holodex can add mentions while a stream is already running (for example,
+  // a surprise guest in a 凸待ち). Refresh tracked videos separately from RSS.
+  const guestRefresh = await refreshTrackedGuests(env, { live: previousAllLive, upcoming: previousAllUpcoming, ended: previousAllEnded }, globalIds, master.talentMap, guestRefreshCursors || {});
   let youtubeVideos = []; let nextProcessed = processedRssIds; let nextRssCursor = rssCursor; let scannedYoutube = false;
   if (env.YOUTUBE_API_KEY && now - Number(lastYoutubeScan || 0) >= youtubeInterval(new Date(now))) {
     const holodexIds = new Set(holodexVideos.map((item) => item.videoId));
@@ -551,7 +624,7 @@ async function monitor(env) {
     nextRssCursor = rssBatch.nextCursor;
     scannedYoutube = true;
   }
-  const all = merge([...holodexVideos, ...youtubeVideos]).filter((item) => shouldInclude(item, master));
+  const all = merge([...holodexVideos, ...youtubeVideos, ...guestRefresh.videos]).filter((item) => shouldInclude(item, master));
   const favRaw = Object.keys(master.favorites).length ? await holodex(env, '/users/live', { channels: Object.keys(master.favorites).join(',') }) : [];
   const specialRaw = await holodex(env, '/live', { org: 'Hololive', max_upcoming_hours: '336' });
   const favorites = merge([...favRaw.map((raw) => video(raw)), ...specialRaw.filter((raw) => !master.excludes.includes(raw.channel?.id) && isSpecial(raw.title, master.eventKeywords)).map((raw) => ({ ...video(raw), isSpecial: true })), ...all.filter((item) => primaryTarget(item, master))]);
@@ -568,7 +641,9 @@ async function monitor(env) {
   const split = async (items, previousLive, previousUpcoming, previousEnded) => {
     const live = items.filter((item) => item.isLive); const upcoming = items.filter((item) => !item.isLive && !item.isEnded);
     const disappeared = await endedFrom([...previousLive, ...previousUpcoming], items, env, keep, viewerBuffer);
-    const ended = merge([...items.filter((item) => item.isEnded), ...disappeared, ...previousEnded]).filter((item) => new Date(item.startTimeRaw).getTime() >= keep).sort((a, b) => new Date(b.startTimeRaw) - new Date(a.startTimeRaw));
+    // Current Holodex details come last so they replace stale guest data in
+    // the 90-day archive instead of being overwritten by the old D1 copy.
+    const ended = merge([...previousEnded, ...disappeared, ...items.filter((item) => item.isEnded)]).filter((item) => new Date(item.startTimeRaw).getTime() >= keep).sort((a, b) => new Date(b.startTimeRaw) - new Date(a.startTimeRaw));
     return { live, upcoming, ended };
   };
   const [allState, uiState] = await Promise.all([split(all, previousAllLive, previousAllUpcoming, previousAllEnded), split(classifiedFavorites, previousUiLive, previousUiUpcoming, previousUiEnded)]);
@@ -577,7 +652,7 @@ async function monitor(env) {
   const relational = relationalStore;
   await persistVideoStates(env, { allLive: allState.live, allUpcoming: allState.upcoming, allEnded: allState.ended, uiLive: uiState.live, uiUpcoming: uiState.upcoming, uiEnded: uiState.ended }, now);
   await recordViewerSamples(env, allState.live, now);
-  await setStates(env, { ...(relational ? {} : { all_live: allState.live, all_upcoming: allState.upcoming, all_ended: allState.ended, ui_live: uiState.live, ui_upcoming: uiState.upcoming, ui_ended: uiState.ended, notification_history: notificationHistory, viewer_buffer: updateViewerBuffer(viewerBuffer, allState.live, now) }), processed_rss_ids: nextProcessed, rss_channel_cursor: scannedYoutube ? nextRssCursor : rssCursor, last_youtube_scan: scannedYoutube ? now : lastYoutubeScan, last_monitor_run: now, monitor_error: null });
+  await setStates(env, { ...(relational ? {} : { all_live: allState.live, all_upcoming: allState.upcoming, all_ended: allState.ended, ui_live: uiState.live, ui_upcoming: uiState.upcoming, ui_ended: uiState.ended, notification_history: notificationHistory, viewer_buffer: updateViewerBuffer(viewerBuffer, allState.live, now) }), processed_rss_ids: nextProcessed, rss_channel_cursor: scannedYoutube ? nextRssCursor : rssCursor, holodex_guest_refresh_cursor: guestRefresh.cursors, last_youtube_scan: scannedYoutube ? now : lastYoutubeScan, last_monitor_run: now, monitor_error: null });
   try {
     const nextHistory = await notifyChanges(env, classifiedFavorites, notificationHistory, master);
     if (nextHistory !== notificationHistory) relational ? await persistNotificationHistory(env, nextHistory, now) : await setState(env, 'notification_history', nextHistory);
