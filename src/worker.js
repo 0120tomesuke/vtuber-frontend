@@ -103,9 +103,103 @@ async function youtubeDetails(env, ids) { if (!env.YOUTUBE_API_KEY || !ids.lengt
 async function archiveStats(env, videoId, fallback) { const [youtube, detail] = await Promise.allSettled([async () => { if (!env.YOUTUBE_API_KEY) return 0; const query = new URLSearchParams({ part: 'contentDetails', id: videoId, key: env.YOUTUBE_API_KEY }); const response = await fetch(`https://www.googleapis.com/youtube/v3/videos?${query}`); return response.ok ? isoDurationSeconds((await response.json()).items?.[0]?.contentDetails?.duration) : 0; }, holodex(env, `/videos/${encodeURIComponent(videoId)}`)]); const peak = Number(detail.status === 'fulfilled' ? detail.value?.live_viewers : 0) || Number(String(fallback.liveViewersFormatted || 0).replaceAll(',', '')) || 0; return { duration: youtube.status === 'fulfilled' ? youtube.value : 0, peak }; }
 async function endedFrom(previous, current, env, keep) { const currentIds = new Set(current.map((item) => item.videoId)); const candidates = previous.filter((item) => !currentIds.has(item.videoId)); return (await Promise.all(candidates.map(async (item) => { const stats = await archiveStats(env, item.videoId, item); return { ...item, isLive: false, isEnded: true, liveViewersFormatted: stats.peak ? Number(stats.peak).toLocaleString() : item.liveViewersFormatted, durationLabel: stats.duration ? `${Math.floor(stats.duration / 60)}:${String(stats.duration % 60).padStart(2, '0')}` : item.durationLabel }; }))).filter((item) => new Date(item.startTimeRaw).getTime() >= keep); }
 const html = (value) => String(value || '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
-function notificationHtml(items) { return `<div style="font-family:Arial,sans-serif;max-width:560px;margin:auto">${items.map((item) => `<a href="${html(item.videoUrl)}" style="display:block;color:#222;text-decoration:none;margin:16px 0"><div style="border:1px solid #d1e9ff;border-radius:12px;overflow:hidden"><img src="${html(item.thumbnail)}" alt="" style="display:block;width:100%"><div style="padding:12px"><strong>${html(item.startTime)}</strong><h3 style="margin:8px 0">${html(item.title)}</h3><p>${html(item.channelTitle)}</p>${item.changedFields?.length ? `<p style="color:#c62828">変更: ${html(item.changedFields.join('・'))}</p>` : ''}</div></div></a>`).join('')}<p style="color:#999;font-size:12px">※このメールは自動送信されています。</p></div>`; }
-async function sendEmail(env, subject, items, senderName) { if (!items.length || !env.RESEND_API_KEY || !env.EMAIL_FROM || !env.NOTIFICATION_EMAIL) return false; const response = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'content-type': 'application/json' }, body: JSON.stringify({ from: `${senderName} <${env.EMAIL_FROM}>`, to: [env.NOTIFICATION_EMAIL], subject, html: notificationHtml(items) }) }); if (!response.ok) throw new Error(`Resend failed: ${response.status}`); return true; }
-async function notifyChanges(env, items, history) { const candidates = items.filter((item) => item.notificationKind); const fresh = candidates.filter((item) => item.notificationKind === 'new'); const changed = candidates.filter((item) => item.notificationKind === 'changed'); const sentNew = await sendEmail(env, `新規：${fresh.length}件の配信`, fresh, 'ホロライブ新規配信通知'); const sentChanged = await sendEmail(env, `変更：${changed.length}件の配信`, changed, 'ホロライブ配信変更通知'); if (!sentNew && !sentChanged) return history; const next = { ...history }; candidates.forEach((item) => { next[item.videoId] = { title: item.title, startTimeRaw: item.startTimeRaw, notified: true, everWentLive: Boolean(item.isLive || history[item.videoId]?.everWentLive) }; }); return next; }
+const formatDate = (value) => format(value, true);
+const formatHour = (value) => format(value).slice(6, 8);
+const normalizedTalentName = (name, talentMap) => talentMap[String(name || '')] || String(name || '');
+
+function notificationTarget(item, master) {
+  const favoriteIds = new Set(Object.keys(master.favorites));
+  return Boolean(item.isSpecial || favoriteIds.has(item.channelId) || (item.mentions || []).some((mention) => favoriteIds.has(mention.id)));
+}
+
+function shouldSendChanged(item, now) {
+  if (item.changedFields?.includes('タイトル')) return true;
+  if (!item.changedFields?.includes('開始時刻') || !item.startTimeRaw) return true;
+  return new Date(item.startTimeRaw).getTime() > now;
+}
+
+function subjectSummary(items, kind, talentMap) {
+  const names = items.map((item) => normalizedTalentName(item.channelTitle, talentMap));
+  if (items.length === 1) {
+    const item = items[0];
+    if (kind === 'new') return `${names[0]} 「${item.title}」`;
+    if (item.changedFields?.includes('開始時刻')) return `${names[0]} 開始時間変更 (${item.startTime})`;
+    if (item.changedFields?.includes('タイトル')) return `${names[0]} タイトル変更`;
+    return `${names[0]} 更新`;
+  }
+  const uniqueNames = [...new Set(names)].slice(0, 2);
+  const more = new Set(names).size - uniqueNames.length;
+  return `${uniqueNames.join('・')}${more > 0 ? ` ほか${more}名` : ''} 計${items.length}件`;
+}
+
+function specialKeyword(title, eventKeywords) {
+  const lower = String(title || '').toLowerCase();
+  for (const [category, words] of Object.entries(eventKeywords || {})) {
+    if (category === 'その他') continue;
+    const word = (words || []).find((value) => lower.includes(String(value).toLowerCase()));
+    if (word) return word;
+  }
+  return '';
+}
+
+function changeDetail(item) {
+  const previous = item.previous;
+  if (!previous || !item.changedFields?.length) return '';
+  const lines = [];
+  if (item.changedFields.includes('タイトル')) lines.push(`タイトル: 「${previous.title || ''}」 → 「${item.title}」`);
+  if (item.changedFields.includes('開始時刻')) lines.push(`開始時刻: ${format(previous.startTimeRaw)} → ${item.startTime}`);
+  return lines.length ? `<div style="font-size:14px;color:#d00;margin:6px 0 10px;line-height:1.4">${lines.map(html).join('<br>')}</div>` : '';
+}
+
+function notificationCard(item, master) {
+  const favoriteIds = new Set(Object.keys(master.favorites));
+  const guestNames = (item.mentions || []).filter((mention) => favoriteIds.has(mention.id)).map((mention) => normalizedTalentName(mention.name, master.talentMap));
+  const labels = `${item.notificationKind === 'new' ? '<span style="position:absolute;left:8px;top:8px;padding:4px 8px;border-radius:4px;font-size:14px;font-weight:bold;background:#fff;color:#2e7d32;border:1px solid #2e7d32">NEW</span>' : ''}${item.changedFields?.length ? '<span style="position:absolute;left:8px;top:8px;padding:4px 8px;border-radius:4px;font-size:14px;font-weight:bold;background:#fff9c4;color:#ef6c00;border:1px solid #ef6c00">変更</span>' : ''}`;
+  const guests = guestNames.length ? `<div style="font-size:14px;color:#555;margin-bottom:6px">参加: ${html(guestNames.join('・'))}</div>` : '';
+  const keyword = specialKeyword(item.title, master.eventKeywords);
+  const special = keyword ? `<div style="display:inline-block;background:#ffebee;color:#c62828;padding:2px 8px;border-radius:4px;font-size:13px;margin-top:8px;font-weight:bold">${html(keyword)}</div>` : '';
+  return `<a href="${html(item.videoUrl)}" target="_blank" style="text-decoration:none;color:inherit;display:block;margin-bottom:16px"><div style="background:#f0f7ff;padding:12px;border-radius:12px;border:1px solid #d1e9ff"><div style="background:#fff;border-radius:8px;overflow:hidden"><div style="position:relative;width:100%;line-height:0"><img src="${html(item.thumbnail)}" alt="" style="width:100%;height:auto;display:block">${labels}</div><div style="padding:12px"><div style="font-size:14px;font-weight:bold;color:#1976d2;margin-bottom:4px">${html(item.startTime)}</div><div style="font-size:16px;font-weight:bold;line-height:1.4;margin-bottom:8px;color:#333">${html(item.title)}</div>${changeDetail(item)}${guests}${special}</div></div></div></a>`;
+}
+
+function notificationHtml(items, master) {
+  const byDate = new Map();
+  items.forEach((item) => { const key = formatDate(item.startTimeRaw); byDate.set(key, [...(byDate.get(key) || []), item]); });
+  const weekday = ['日', '月', '火', '水', '木', '金', '土'];
+  return `<div style="font-family:'Helvetica Neue',Arial,sans-serif;max-width:500px;margin:0 auto;color:#333">${[...byDate.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([date, dateItems]) => {
+    const [month, day] = date.split('/').map(Number);
+    const dateWithYear = new Date(Date.UTC(new Date().getFullYear(), month - 1, day));
+    const byHour = new Map(); dateItems.forEach((item) => { const hour = formatHour(item.startTimeRaw); byHour.set(hour, [...(byHour.get(hour) || []), item]); });
+    return `<div style="background:#ff9800;color:#fff;padding:8px 12px;margin:24px 0 12px;border-radius:6px;font-size:16px;font-weight:bold;display:inline-block">📅 ${date}（${weekday[dateWithYear.getUTCDay()]}）</div>${[...byHour.entries()].sort(([a], [b]) => Number(a) - Number(b)).map(([hour, hourItems]) => `<div style="border-left:4px solid #4da3ff;padding-left:8px;margin:16px 0 12px;font-size:15px;font-weight:bold;color:#1976d2">${hour}:00 ～</div>${hourItems.map((item) => notificationCard(item, master)).join('')}`).join('')}`;
+  }).join('')}<div style="text-align:center;margin-top:20px;padding-top:20px;border-top:1px solid #eee;font-size:12px;color:#999">※このメールは自動送信されています。</div></div>`;
+}
+
+async function sendEmail(env, subject, items, senderName, master) {
+  if (!items.length || !env.RESEND_API_KEY || !env.EMAIL_FROM || !env.NOTIFICATION_EMAIL) return false;
+  const response = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, 'content-type': 'application/json' }, body: JSON.stringify({ from: `${senderName} <${env.EMAIL_FROM}>`, to: [env.NOTIFICATION_EMAIL], subject, html: notificationHtml(items, master) }) });
+  if (!response.ok) throw new Error(`Resend failed: ${response.status}`);
+  return true;
+}
+
+function updateNotificationHistory(history, items) {
+  const next = { ...history };
+  items.forEach((item) => {
+    const previous = next[item.videoId] || {};
+    next[item.videoId] = { ...previous, title: item.title, startTimeRaw: item.startTimeRaw, channelTitle: item.channelTitle, channelPhoto: item.channelIcon || previous.channelPhoto || '', mentions: item.mentions || previous.mentions || [], isLive: Boolean(item.isLive), notified: true, everWentLive: Boolean(item.isLive || previous.everWentLive) };
+  });
+  const threshold = Date.now() - 7 * 86400000;
+  return Object.fromEntries(Object.entries(next).filter(([, item]) => new Date(item.startTimeRaw).getTime() >= threshold));
+}
+
+async function notifyChanges(env, items, history, master) {
+  const now = Date.now();
+  const candidates = items.filter((item) => item.notificationKind && notificationTarget(item, master));
+  const fresh = candidates.filter((item) => item.notificationKind === 'new');
+  const changed = candidates.filter((item) => item.notificationKind === 'changed' && shouldSendChanged(item, now));
+  const sentNew = await sendEmail(env, `新規：${subjectSummary(fresh, 'new', master.talentMap)}`, fresh, 'ホロライブ新規配信通知', master);
+  const sentChanged = await sendEmail(env, `変更：${subjectSummary(changed, 'changed', master.talentMap)}`, changed, 'ホロライブ配信変更通知', master);
+  if ((fresh.length && !sentNew) || (changed.length && !sentChanged)) return history;
+  return updateNotificationHistory(history, items);
+}
 async function monitor(env) {
   const now = Date.now();
   const lastRun = await getState(env, 'last_monitor_run', 0);
@@ -140,8 +234,8 @@ async function monitor(env) {
   const classify = (item) => {
     if (!target(item, master)) return { ...item };
     const previous = notificationHistory[item.videoId]; const changes = changedFields(item, previous);
-    if (!previous?.notified) return { ...item, notificationKind: 'new', changedFields: changes };
-    return { ...item, notificationKind: changes.length ? 'changed' : '', changedFields: changes };
+    if (!previous?.notified) return { ...item, previous, notificationKind: 'new', changedFields: changes };
+    return { ...item, previous, notificationKind: changes.length ? 'changed' : '', changedFields: changes };
   };
   const classifiedFavorites = favorites.map(classify);
   const split = async (items, previousLive, previousUpcoming, previousEnded) => {
@@ -154,7 +248,7 @@ async function monitor(env) {
   // A notification provider outage must never discard a successful monitor result.
   await setStates(env, { all_live: allState.live, all_upcoming: allState.upcoming, all_ended: allState.ended, ui_live: uiState.live, ui_upcoming: uiState.upcoming, ui_ended: uiState.ended, notification_history: notificationHistory, processed_rss_ids: nextProcessed, rss_channel_cursor: scannedYoutube ? nextRssCursor : rssCursor, last_youtube_scan: scannedYoutube ? now : lastYoutubeScan, last_monitor_run: now });
   try {
-    const nextHistory = await notifyChanges(env, classifiedFavorites, notificationHistory);
+    const nextHistory = await notifyChanges(env, classifiedFavorites, notificationHistory, master);
     if (nextHistory !== notificationHistory) await setState(env, 'notification_history', nextHistory);
   } catch (error) {
     console.error('Notification delivery failed after monitor state was saved.', error);
