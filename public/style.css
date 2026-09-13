@@ -1475,3 +1475,145 @@ body.menu-open #side-menu {
   .live-viewers.ended-stats { margin: 0 !important; }
   .duration-badge { background: rgba(2, 6, 23, .55); backdrop-filter: blur(2px); }
 }
+
+/* PC CARD: original thumbnail-first composition, with compact live metadata.
+   This final override deliberately preserves the earlier experimental blocks
+   above so the whole trial remains easy to revert in Git. */
+@media screen and (min-width: 769px) {
+  .cards.grid { grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)) !important; gap: 12px !important; }
+  .card { border-radius: 14px; background: #0d172b; }
+  .card-thumb::after { display: none !important; }
+  .card:hover .card-thumb::after { display: block !important; opacity: 1 !important; background: rgba(2, 6, 23, .64) !important; }
+  .card:hover .card-thumb img { transform: none !important; }
+
+  .card-body {
+    min-height: 145px !important;
+    padding: 13px 10px 12px !important;
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: center !important;
+    justify-content: flex-start !important;
+    gap: 12px !important;
+    background: #0d172b !important;
+  }
+  .card-time {
+    position: static !important;
+    order: 1;
+    width: auto !important;
+    padding: 0 !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    background: transparent !important;
+    color: #ff4d88 !important;
+    font-size: 18px !important;
+    font-weight: 900 !important;
+    line-height: 1.1 !important;
+    letter-spacing: .08em !important;
+    text-shadow: none !important;
+  }
+  .card-guests {
+    position: static !important;
+    order: 2;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    flex-wrap: wrap !important;
+    width: 100% !important;
+    min-height: 48px;
+    margin: 0 !important;
+    gap: 6px !important;
+    overflow: visible !important;
+  }
+  .guest-caption { display: none; }
+  .card-guests img, .card-guests .owner-icon-pc, .card-guests .guest-icon {
+    width: 42px !important;
+    height: 42px !important;
+    margin: 0 !important;
+    border: 2px solid #334155 !important;
+    border-radius: 50% !important;
+    box-shadow: none !important;
+  }
+  .card-guests img:first-of-type { border-color: #ff4d88 !important; }
+  .guest-name-text { padding: 4px 7px; border: 1px solid #475569; border-radius: 999px; color: #cbd5e1; font-size: 11px; }
+
+  /* Title details intentionally appear only while hovering a card. */
+  .card-channel, .card-title {
+    position: absolute !important;
+    z-index: 22 !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+    color: #fff !important;
+    text-shadow: 0 2px 7px #000 !important;
+    transition: opacity .16s ease !important;
+  }
+  .card-channel {
+    top: 12px !important;
+    right: 11px !important;
+    left: auto !important;
+    width: auto !important;
+    max-width: 72%;
+    padding: 5px 8px !important;
+    border: 1px solid rgba(255,255,255,.22) !important;
+    border-radius: 7px !important;
+    background: rgba(2, 6, 23, .67) !important;
+    font-size: 12px !important;
+    line-height: 1.2 !important;
+  }
+  .card-title {
+    top: 54px !important;
+    left: 13px !important;
+    width: calc(100% - 26px) !important;
+    padding: 10px 11px !important;
+    background: rgba(2, 6, 23, .73) !important;
+    border-radius: 8px !important;
+    font-size: 15px !important;
+    font-weight: 800 !important;
+    line-height: 1.42 !important;
+    text-align: left !important;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .card:hover .card-channel, .card:hover .card-title { opacity: 1 !important; transform: none !important; }
+  .card-keyword { position: absolute !important; top: 48px !important; left: 10px !important; z-index: 23; opacity: 1 !important; }
+
+  .label-live, .label-ended, .label-upcoming {
+    top: 10px; left: 10px; padding: 5px 9px;
+    border-radius: 8px; background: rgba(225, 29, 72, .82) !important;
+    backdrop-filter: blur(3px); box-shadow: none !important;
+  }
+  .label-ended { background: rgba(15, 23, 42, .76) !important; }
+  .label-upcoming { background: rgba(37, 99, 235, .78) !important; }
+  .live-viewers {
+    position: absolute !important;
+    order: unset;
+    z-index: 24 !important;
+    left: 12px !important;
+    bottom: calc(100% - 1px) !important;
+    display: inline-flex !important;
+    align-items: center;
+    gap: 5px;
+    min-height: 0;
+    padding: 5px 8px !important;
+    margin: 0 !important;
+    border: 0 !important;
+    border-radius: 7px 7px 0 0 !important;
+    background: rgba(225, 29, 72, .82) !important;
+    backdrop-filter: blur(3px);
+    color: #fff !important;
+    font-size: 12px !important;
+    line-height: 1 !important;
+    text-shadow: none !important;
+  }
+  .live-viewers strong { font-size: 14px; color: #fff; }
+  .metric-live-dot { display: none; }
+  .metric-label { color: #fff; font-size: 11px; letter-spacing: .02em; }
+  .metric-label::after { content: '同接'; font-size: 11px; }
+  .metric-label { font-size: 0; }
+  .metric-unit { font-size: 11px; color: #fff; }
+  .live-viewers.ended-stats { position: absolute !important; background: rgba(225, 29, 72, .82) !important; }
+  .ended-stat-label { color: #fff; font-size: 0; }
+  .ended-stat-label::after { content: '最大同接'; font-size: 11px; }
+  .viewer-chart-btn { padding: 0 2px; border-color: rgba(255,255,255,.65); color: #fff; font-size: 12px; }
+  .duration-badge { right: 10px; bottom: 10px; padding: 5px 7px; border-radius: 7px; background: rgba(2, 6, 23, .58); backdrop-filter: blur(3px); }
+}
