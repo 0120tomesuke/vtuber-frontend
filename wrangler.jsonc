@@ -24,8 +24,26 @@
 			"migrations_dir": "migrations"
 		}
 	],
+	"queues": {
+		"producers": [
+			{
+				"binding": "MONITOR_QUEUE",
+				"queue": "hololive-live-monitor-jobs"
+			}
+		],
+		"consumers": [
+			{
+				"queue": "hololive-live-monitor-jobs",
+				"max_batch_size": 1,
+				"max_batch_timeout": 1,
+				"max_concurrency": 1,
+				"max_retries": 2
+			}
+		]
+	},
 	"vars": {
 		"EMAIL_FROM": "onboarding@resend.dev",
-		"NOTIFICATION_EMAIL": "hololivemessage@gmail.com"
+		"NOTIFICATION_EMAIL": "hololivemessage@gmail.com",
+		"GMAIL_SENDER_EMAIL": "0120tomesuke@gmail.com"
 	}
 }

@@ -769,6 +769,38 @@ async function monitor(env) {
   }
   return { ran: true, discovered: all.length };
 }
+async function runScheduledMonitor(env) {
+  const attemptedAt = new Date().toISOString();
+  const now = Date.now();
+  let monitorRunId = null;
+  // These were separate GAS triggers. Keeping them with the queue consumer
+  // removes their D1 work from the 10 ms Free-plan cron invocation.
+  for (const [key, interval, task] of [
+    ['last_buffer_sheet_cleanup', 12 * 3600_000, () => cleanupOldBufferSheet(env, now)],
+    ['last_notification_history_cleanup', 24 * 3600_000, () => autoCleanupNotificationHistory(env, now)],
+    ['last_operational_data_cleanup', 24 * 3600_000, () => cleanupOperationalData(env, now)]
+  ]) {
+    try { await runPeriodicMaintenance(env, key, interval, task, now); }
+    catch (error) {
+      console.error('Scheduled maintenance failed.', error);
+      await setState(env, 'maintenance_error', { message: error.message || 'Scheduled maintenance failed', at: attemptedAt });
+    }
+  }
+  try {
+    await setState(env, 'last_monitor_attempt', { at: attemptedAt });
+    monitorRunId = await startMonitorRun(env, 'monitor', Number(await getState(env, 'rss_channel_cursor', 0)));
+    const result = await monitor(env);
+    await finishMonitorRun(env, monitorRunId, result?.ran ? 'success' : 'skipped', result?.discovered || 0);
+    await notifyJustBeforeStart(env);
+  } catch (error) {
+    console.error('Scheduled monitor failed.', error);
+    await finishMonitorRun(env, monitorRunId, 'failed', 0, error.message || 'Scheduled monitor failed');
+    await setState(env, 'monitor_error', {
+      message: error.message || 'Scheduled monitor failed',
+      at: attemptedAt
+    });
+  }
+}
 function isAdmin(request, env) {
   if (!env.ADMIN_PASSWORD) return false;
   const bearer = request.headers.get('authorization') || '';
@@ -874,39 +906,15 @@ async function api(request, env, url) {
 export default {
   async fetch(request, env) { const url = new URL(request.url); try { if (url.pathname === '/health') return json({ status: 'ok' }); if (url.pathname.startsWith('/api/') || url.pathname === '/calendar.ics' || (url.pathname === '/' && (url.searchParams.has('action') || url.searchParams.get('mode') === 'all' || url.searchParams.get('mode') === 'special' || url.searchParams.get('type') === 'ical'))) { const response = await api(request, env, url); if (response) return response; } return env.ASSETS.fetch(request); } catch (error) { return json({ error: error.message || 'Internal server error' }, 500); } },
   async scheduled(event, env, context) {
-    context.waitUntil((async () => {
-      const attemptedAt = new Date().toISOString();
-      const now = Date.now();
-      let monitorRunId = null;
-      // These were separate GAS triggers.  Keep them independent of monitor
-      // success so a temporary API outage cannot postpone housekeeping.
-      for (const [key, interval, task] of [
-        ['last_buffer_sheet_cleanup', 12 * 3600_000, () => cleanupOldBufferSheet(env, now)],
-        ['last_notification_history_cleanup', 24 * 3600_000, () => autoCleanupNotificationHistory(env, now)],
-        ['last_operational_data_cleanup', 24 * 3600_000, () => cleanupOperationalData(env, now)]
-      ]) {
-        try { await runPeriodicMaintenance(env, key, interval, task, now); }
-        catch (error) {
-          console.error('Scheduled maintenance failed.', error);
-          await setState(env, 'maintenance_error', { message: error.message || 'Scheduled maintenance failed', at: attemptedAt });
-        }
-      }
-      try {
-        // Keep a lightweight heartbeat so a failed first run is distinguishable
-        // from a cron trigger that has not executed yet.
-        await setState(env, 'last_monitor_attempt', { at: attemptedAt });
-        monitorRunId = await startMonitorRun(env, 'monitor', Number(await getState(env, 'rss_channel_cursor', 0)));
-        const result = await monitor(env);
-        await finishMonitorRun(env, monitorRunId, result?.ran ? 'success' : 'skipped', result?.discovered || 0);
-        await notifyJustBeforeStart(env);
-      } catch (error) {
-        console.error('Scheduled monitor failed.', error);
-        await finishMonitorRun(env, monitorRunId, 'failed', 0, error.message || 'Scheduled monitor failed');
-        await setState(env, 'monitor_error', {
-          message: error.message || 'Scheduled monitor failed',
-          at: attemptedAt
-        });
-      }
-    })());
+    // Workers Free allows only 10 ms of CPU for Cron Triggers. Queueing a
+    // tiny job here keeps the schedule reliable; the Queue consumer performs
+    // the network-heavy monitor work with its own longer execution budget.
+    context.waitUntil(env.MONITOR_QUEUE.send({ requestedAt: event.scheduledTime || Date.now() }));
+  },
+  async queue(batch, env) {
+    for (const message of batch.messages) {
+      await runScheduledMonitor(env);
+      message.ack();
+    }
   }
 };
