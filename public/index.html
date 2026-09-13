@@ -792,9 +792,9 @@
 
     let viewersHtml = "";
     if (video.isLive && video.liveViewersFormatted) {
-      viewersHtml = `<div class="live-viewers ${isMax ? "max-live" : ""}">同接：${video.liveViewersFormatted} <button class="viewer-chart-btn" onclick="event.preventDefault();event.stopPropagation();openViewerChart('${video.videoId}', decodeURIComponent('${encodeURIComponent(video.title || '')}'))">📈 推移</button></div>`;
+      viewersHtml = `<div class="live-viewers ${isMax ? "max-live" : ""}"><span class="metric-live-dot"></span><span class="metric-label">LIVE</span><strong>${video.liveViewersFormatted}</strong><span class="metric-unit">人</span><button class="viewer-chart-btn" aria-label="同接推移" onclick="event.preventDefault();event.stopPropagation();openViewerChart('${video.videoId}', decodeURIComponent('${encodeURIComponent(video.title || '')}'))">⌁</button></div>`;
     } else if (video.isEnded && video.liveViewersFormatted) {
-      viewersHtml = `<div class="live-viewers ended-stats"><span class="ended-stat-label">最大同接</span><strong>${video.liveViewersFormatted}</strong><button class="viewer-chart-btn" onclick="event.preventDefault();event.stopPropagation();openViewerChart('${video.videoId}', decodeURIComponent('${encodeURIComponent(video.title || '')}'))">推移</button></div>`;
+      viewersHtml = `<div class="live-viewers ended-stats"><span class="ended-stat-label">PEAK</span><strong>${video.liveViewersFormatted}</strong><span class="metric-unit">人</span><button class="viewer-chart-btn" aria-label="同接推移" onclick="event.preventDefault();event.stopPropagation();openViewerChart('${video.videoId}', decodeURIComponent('${encodeURIComponent(video.title || '')}'))">⌁</button></div>`;
     }
 
     const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
