@@ -849,8 +849,8 @@ function imminentReason(item, master) {
   if (namedGuest && !guests.some((guest) => guest.name === namedGuest)) reasons.push(`●ゲスト(タイトル:${namedGuest})`);
   return reasons.join('');
 }
-async function notifyJustBeforeStart(env) {
-  const now = Date.now();
+async function notifyJustBeforeStart(env, notificationTime = Date.now()) {
+  const now = Number(notificationTime) || Date.now();
   // The Queue monitor runs every minute, so unlike GAS this can be based on
   // each stream's actual scheduled time rather than fixed hourly windows.
   const PRE_START_WINDOW_MINUTES = 2;
@@ -999,7 +999,7 @@ async function monitor(env) {
   }
   return { ran: true, discovered: all.length };
 }
-async function runScheduledMonitor(env) {
+async function runScheduledMonitor(env, notificationTime = Date.now()) {
   const attemptedAt = new Date().toISOString();
   const now = Date.now();
   let monitorRunId = null;
@@ -1020,7 +1020,10 @@ async function runScheduledMonitor(env) {
     // Start alerts have a narrow two-minute window. Run their independent
     // lookup before the heavier full monitor so a slow RSS/YouTube pass
     // cannot make a valid alert arrive late or miss its window.
-    await notifyJustBeforeStart(env);
+    // Queue delivery may occur after its originating cron minute. Use that
+    // cron timestamp for the narrow start-alert window, not the delayed
+    // consumer wall-clock time.
+    if (Date.now() - Number(notificationTime || 0) <= 3 * 60_000) await notifyJustBeforeStart(env, notificationTime);
     const runtime = await getState(env, 'monitor_runtime', null);
     const batchStart = Number(runtime?.rssCursor || await getState(env, 'rss_channel_cursor', 0));
     // The history screen remains useful without charging two D1 writes for
@@ -1154,7 +1157,7 @@ export default {
   },
   async queue(batch, env) {
     for (const message of batch.messages) {
-      await runScheduledMonitor(env);
+      await runScheduledMonitor(env, Number(message.body?.requestedAt) || Date.now());
       message.ack();
     }
   }
