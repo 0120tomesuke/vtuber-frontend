@@ -456,11 +456,17 @@ const html = (value) => String(value || '').replaceAll('&', '&amp;').replaceAll(
 const formatDate = (value) => format(value, true);
 const formatHour = (value) => format(value).slice(6, 8);
 const normalizedTalentName = (name, talentMap = {}) => {
-  const raw = String(name || '');
+  const raw = String(name || '').trim();
   if (talentMap[raw]) return talentMap[raw];
   const japanese = raw.match(/[ぁ-んァ-ン一-龥々〆ヵヶ]+/g);
-  return japanese ? japanese.join('') : raw;
+  // Holodex occasionally appends a generation label such as "3期生" to a
+  // talent name. Digits are removed by the Japanese-only fallback below,
+  // which used to leave the misleading suffix "期生" in notification mail.
+  return (japanese ? japanese.join('') : raw).replace(/(?:[〇一二三四五六七八九十0-9０-９]+)?期生/g, '').trim() || raw;
 };
+const mentionDisplayName = (mention, master) => String(
+  master?.favorites?.[mention?.id]?.name || master?.global?.[mention?.id]?.name || normalizedTalentName(mention?.name, master?.talentMap)
+).trim();
 
 function notificationTarget(item, master) {
   const favoriteIds = new Set(Object.keys(master.favorites));
@@ -499,14 +505,14 @@ function specialKeyword(title, eventKeywords) {
   return '';
 }
 
-function changeDetail(item) {
+function changeDetail(item, master) {
   const previous = item.previous;
   if (!previous || !item.changedFields?.length) return '';
   const lines = [];
   if (item.changedFields.includes('タイトル')) lines.push(`タイトル: 「${previous.title || ''}」 → 「${item.title}」`);
   if (item.changedFields.includes('開始時刻')) lines.push(`開始時刻: ${format(previous.startTimeRaw)} → ${item.startTime}`);
   if (item.changedFields.includes('ゲスト')) {
-    const names = (mentions) => [...new Set((mentions || []).map((mention) => mention.name).filter(Boolean))].join('・') || 'なし';
+    const names = (mentions) => [...new Set((mentions || []).map((mention) => mentionDisplayName(mention, master)).filter(Boolean))].join('・') || 'なし';
     lines.push(`ゲスト: ${names(previous.mentions)} → ${names(item.mentions)}`);
   }
   return lines.length ? `<div style="font-size:14px;color:#d00;margin:6px 0 10px;line-height:1.4">${lines.map(html).join('<br>')}</div>` : '';
@@ -514,12 +520,12 @@ function changeDetail(item) {
 
 function notificationCard(item, master) {
   const favoriteIds = new Set(Object.keys(master.favorites));
-  const guestNames = (item.mentions || []).filter((mention) => favoriteIds.has(mention.id)).map((mention) => normalizedTalentName(mention.name, master.talentMap));
+  const guestNames = (item.mentions || []).filter((mention) => favoriteIds.has(mention.id)).map((mention) => mentionDisplayName(mention, master));
   const labels = `${item.notificationKind === 'new' ? '<span style="position:absolute;left:8px;top:8px;padding:4px 8px;border-radius:4px;font-size:14px;font-weight:bold;background:#fff;color:#2e7d32;border:1px solid #2e7d32">NEW</span>' : ''}${item.changedFields?.length ? '<span style="position:absolute;left:8px;top:8px;padding:4px 8px;border-radius:4px;font-size:14px;font-weight:bold;background:#fff9c4;color:#ef6c00;border:1px solid #ef6c00">変更</span>' : ''}`;
   const guests = guestNames.length ? `<div style="font-size:14px;color:#555;margin-bottom:6px">参加: ${html(guestNames.join('・'))}</div>` : '';
   const keyword = specialKeyword(item.title, master.eventKeywords);
   const special = keyword ? `<div style="display:inline-block;background:#ffebee;color:#c62828;padding:2px 8px;border-radius:4px;font-size:13px;margin-top:8px;font-weight:bold">${html(keyword)}</div>` : '';
-  return `<a href="${html(item.videoUrl)}" target="_blank" style="text-decoration:none;color:inherit;display:block;margin-bottom:16px"><div style="background:#f0f7ff;padding:12px;border-radius:12px;border:1px solid #d1e9ff"><div style="background:#fff;border-radius:8px;overflow:hidden"><div style="position:relative;width:100%;line-height:0"><img src="${html(item.thumbnail)}" alt="" style="width:100%;height:auto;display:block">${labels}</div><div style="padding:12px"><div style="font-size:14px;font-weight:bold;color:#1976d2;margin-bottom:4px">${html(item.startTime)}</div><div style="font-size:16px;font-weight:bold;line-height:1.4;margin-bottom:8px;color:#333">${html(item.title)}</div>${changeDetail(item)}${guests}${special}</div></div></div></a>`;
+  return `<a href="${html(item.videoUrl)}" target="_blank" style="text-decoration:none;color:inherit;display:block;margin-bottom:16px"><div style="background:#f0f7ff;padding:12px;border-radius:12px;border:1px solid #d1e9ff"><div style="background:#fff;border-radius:8px;overflow:hidden"><div style="position:relative;width:100%;line-height:0"><img src="${html(item.thumbnail)}" alt="" style="width:100%;height:auto;display:block">${labels}</div><div style="padding:12px"><div style="font-size:14px;font-weight:bold;color:#1976d2;margin-bottom:4px">${html(item.startTime)}</div><div style="font-size:16px;font-weight:bold;line-height:1.4;margin-bottom:8px;color:#333">${html(item.title)}</div>${changeDetail(item, master)}${guests}${special}</div></div></div></a>`;
 }
 
 function notificationHtml(items, master) {
@@ -742,7 +748,7 @@ function imminentReason(item, master) {
   if (favoriteIds.has(item.channelId)) reasons.push('★お気に入り');
   if (item.isSpecial || isSpecial(item.title, master.eventKeywords)) reasons.push('◆記念配信');
   const guests = (item.mentions || []).filter((mention) => favoriteIds.has(mention.id) && mention.id !== item.channelId);
-  guests.forEach((guest) => reasons.push(`●ゲスト(連携:${guest.name})`));
+  guests.forEach((guest) => reasons.push(`●ゲスト(連携:${mentionDisplayName(guest, master)})`));
   const ownerName = master.favorites[item.channelId]?.name || '';
   const namedGuest = Object.values(master.favorites).map(({ name }) => name).find((name) => name && name !== ownerName && item.title.includes(name));
   if (namedGuest && !guests.some((guest) => guest.name === namedGuest)) reasons.push(`●ゲスト(タイトル:${namedGuest})`);

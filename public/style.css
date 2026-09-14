@@ -1352,13 +1352,14 @@ body.menu-open #side-menu {
 .admin-toggles label { padding: 6px 9px; background: #0f172a; border-radius: 6px; }
 .admin-list > div, .admin-log > div { display: flex; justify-content: space-between; gap: 10px; padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,.12); font-size: 13px; }
 .admin-list small { color: #cbd5e1; flex: 1; }
+.admin-list { max-height: 420px; overflow-y: auto; overscroll-behavior: contain; padding-right: 5px; }
 .admin-log { max-height: 240px; overflow: auto; color: #e2e8f0; }
 .admin-log > div { display: block; }
 .admin-chips span { display: inline-block; margin: 3px; padding: 3px 6px; border-radius: 12px; background: #164e63; }
 .admin-chips button { margin: 0 0 0 4px; padding: 0 4px; background: transparent; }
 .admin-close { position: absolute; right: 12px; top: 10px; font-size: 22px; background: transparent !important; }
 .admin-error { color: #fca5a5; }
-@media (max-width: 600px) { .admin-panel { margin: 0; padding: 16px; } .admin-list > div { display: block; } }
+@media (max-width: 600px) { .admin-panel { margin: 0; padding: 16px; } .admin-list { max-height: 330px; } .admin-list > div { display: block; } }
 .viewer-chart-btn { padding: 2px 5px; border: 1px solid currentColor; border-radius: 5px; background: transparent; color: inherit; font-size: 11px; cursor: pointer; }
 .viewer-chart { display: block; width: 100%; height: clamp(150px, 26vw, 200px); margin: 10px 0; border-radius: 8px; background: #0f172a; }
 .viewer-chart-grid line { stroke: rgba(148, 163, 184, .28); stroke-width: 1; vector-effect: non-scaling-stroke; }
