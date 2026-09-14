@@ -309,6 +309,9 @@
         const response = await fetch(url, {
           ...options,
           signal: controller.signal,
+          // Live status must always be fetched from the Worker, rather than
+          // a browser's cached copy of a previous upcoming response.
+          cache: 'no-store',
           // RenderのAPIサーバーは標準CORSヘッダーを返す前提のためモードをcorsに明示
           mode: 'cors' 
         });
@@ -1030,6 +1033,17 @@
       document.body.classList.remove('mode-all');
     }
     loadVideos(true);
+  });
+
+  // The Worker refreshes its live/upcoming state about once a minute.  Keep an
+  // open screen in step with that state, but do not make background tabs poll
+  // and do not reset the tab the viewer is currently reading.
+  setInterval(() => {
+    if (document.visibilityState === 'visible' && !isFetchInProgress) loadVideos(false);
+  }, 60_000);
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && !isFetchInProgress) loadVideos(false);
   });
 
   function scrollToTop() {

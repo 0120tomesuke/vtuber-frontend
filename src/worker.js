@@ -8,7 +8,9 @@ const RSS_CHANNELS_PER_SCAN = 20;
 // Keep this modest because the free Worker also performs 20 RSS requests.
 const HOLODEX_GUEST_DETAILS_PER_RUN = { live: 4, upcoming: 3, ended: 1 };
 
-const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json; charset=utf-8' } });
+// Video state is time-sensitive.  Never allow a browser or intermediary to
+// reuse an old API response after a stream changes from upcoming to live.
+const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store, max-age=0' } });
 const esc = (value) => String(value || '').replaceAll('\\', '\\\\').replaceAll(';', '\\;').replaceAll(',', '\\,').replaceAll('\n', '\\n');
 const icalDate = (value) => new Date(value).toISOString().replaceAll(/[-:]/g, '').replace(/\.\d{3}/, '');
 const format = (value, dateOnly = false) => {
