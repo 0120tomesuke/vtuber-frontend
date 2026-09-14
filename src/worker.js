@@ -524,7 +524,8 @@ async function cleanupOperationalData(env, now = Date.now()) {
     env.DB.prepare('DELETE FROM notification_log WHERE created_at < ?').bind(ninetyDays),
     env.DB.prepare('DELETE FROM monitor_runs WHERE started_at < ?').bind(ninetyDays),
     env.DB.prepare('DELETE FROM rss_seen WHERE last_seen_at < ?').bind(ninetyDays),
-    env.DB.prepare('DELETE FROM imminent_notifications WHERE COALESCE(sent_at, claimed_at) < ?').bind(ninetyDays)
+    env.DB.prepare('DELETE FROM imminent_notifications WHERE COALESCE(sent_at, claimed_at) < ?').bind(ninetyDays),
+    env.DB.prepare('DELETE FROM notification_deliveries WHERE COALESCE(sent_at, claimed_at) < ?').bind(ninetyDays)
   ]);
 }
 async function archiveStats(env, videoId, fallback, bufferedPeak = 0) { const storedPeak = await operationalReady(env) ? await env.DB.prepare('SELECT peak_viewers FROM videos WHERE video_id=?').bind(videoId).first() : null; const [youtube, detail] = await Promise.allSettled([async () => { if (!env.YOUTUBE_API_KEY) return 0; const query = new URLSearchParams({ part: 'contentDetails', id: videoId, key: env.YOUTUBE_API_KEY }); const response = await fetch(`https://www.googleapis.com/youtube/v3/videos?${query}`); return response.ok ? isoDurationSeconds((await response.json()).items?.[0]?.contentDetails?.duration) : 0; }, holodex(env, `/videos/${encodeURIComponent(videoId)}`)]); const peak = Number(storedPeak?.peak_viewers || 0) || Number(bufferedPeak) || Number(detail.status === 'fulfilled' ? detail.value?.live_viewers : 0) || Number(String(fallback.liveViewersFormatted || 0).replaceAll(',', '')) || 0; return { duration: youtube.status === 'fulfilled' ? youtube.value : 0, peak }; }
@@ -793,6 +794,43 @@ async function completeStartNotification(env, videoId, now = Date.now()) {
 async function releaseStartNotification(env, videoId) {
   if (await operationalReady(env)) await env.DB.prepare("DELETE FROM imminent_notifications WHERE video_id=? AND status='pending'").bind(videoId).run();
 }
+function notificationDeliveryKey(type, item) {
+  // A new notification is intentionally once per video.  A change can be
+  // mailed again only when the material content of that change is different.
+  if (type === 'new') return `new:${item.videoId}`;
+  const source = JSON.stringify({
+    videoId: item.videoId,
+    title: item.title || '',
+    startTimeRaw: item.startTimeRaw || '',
+    changedFields: [...(item.changedFields || [])].sort(),
+    mentions: (item.mentions || []).map((mention) => mention?.id || mention?.name || '').sort()
+  });
+  let hash = 2166136261;
+  for (let index = 0; index < source.length; index += 1) {
+    hash ^= source.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${type}:${item.videoId}:${(hash >>> 0).toString(36)}`;
+}
+async function claimNotificationDelivery(env, type, item, now = Date.now()) {
+  if (!await operationalReady(env)) return { item, key: null };
+  const key = notificationDeliveryKey(type, item);
+  const result = await env.DB.prepare("INSERT INTO notification_deliveries (delivery_key, video_id, notification_type, status, claimed_at) VALUES (?, ?, ?, 'pending', ?) ON CONFLICT(delivery_key) DO NOTHING")
+    .bind(key, item.videoId, type, now).run();
+  return Number(result.meta?.changes || 0) > 0 ? { item, key } : null;
+}
+async function claimNotificationDeliveries(env, type, items, now = Date.now()) {
+  const claims = await Promise.all(items.map((item) => claimNotificationDelivery(env, type, item, now)));
+  return claims.filter(Boolean);
+}
+async function completeNotificationDeliveries(env, claims, now = Date.now()) {
+  if (!claims.length || !await operationalReady(env)) return;
+  await env.DB.batch(claims.filter(({ key }) => key).map(({ key }) => env.DB.prepare("UPDATE notification_deliveries SET status='sent', sent_at=? WHERE delivery_key=?").bind(now, key)));
+}
+async function releaseNotificationDeliveries(env, claims) {
+  if (!claims.length || !await operationalReady(env)) return;
+  await env.DB.batch(claims.filter(({ key }) => key).map(({ key }) => env.DB.prepare("DELETE FROM notification_deliveries WHERE delivery_key=? AND status='pending'").bind(key)));
+}
 async function sendEmail(env, subject, items, senderName, master) {
   const recipient = (await notificationSettings(env)).notification_email || env.NOTIFICATION_EMAIL;
   if (!items.length || !recipient) return false;
@@ -816,11 +854,26 @@ async function notifyChanges(env, items, history, master) {
   const candidates = items.filter((item) => item.notificationKind && notificationTarget(item, master));
   const fresh = settings.notify_new ? candidates.filter((item) => item.notificationKind === 'new') : [];
   const changed = settings.notify_changed ? candidates.filter((item) => item.notificationKind === 'changed' && shouldSendChanged(item, now, master)) : [];
-  const newSubject = `新規：${subjectSummary(fresh, 'new', master.talentMap)}`;
-  const changedSubject = `変更：${subjectSummary(changed, 'changed', master.talentMap)}`;
-  const sentNew = fresh.length ? await sendAndLog(env, 'new', newSubject, fresh, () => sendEmail(env, newSubject, fresh, 'ホロライブ新規配信通知', master)) : false;
-  const sentChanged = changed.length ? await sendAndLog(env, 'changed', changedSubject, changed, () => sendEmail(env, changedSubject, changed, 'ホロライブ配信通知', master)) : false;
-  if ((fresh.length && !sentNew) || (changed.length && !sentChanged)) return history;
+  const freshClaims = await claimNotificationDeliveries(env, 'new', fresh, now);
+  const changedClaims = await claimNotificationDeliveries(env, 'changed', changed, now);
+  const freshToSend = freshClaims.map(({ item }) => item);
+  const changedToSend = changedClaims.map(({ item }) => item);
+  const newSubject = `新規：${subjectSummary(freshToSend, 'new', master.talentMap)}`;
+  const changedSubject = `変更：${subjectSummary(changedToSend, 'changed', master.talentMap)}`;
+  let sentNew = !freshToSend.length;
+  let sentChanged = !changedToSend.length;
+  try {
+    if (freshToSend.length) sentNew = await sendAndLog(env, 'new', newSubject, freshToSend, () => sendEmail(env, newSubject, freshToSend, 'ホロライブ新規配信通知', master));
+    if (changedToSend.length) sentChanged = await sendAndLog(env, 'changed', changedSubject, changedToSend, () => sendEmail(env, changedSubject, changedToSend, 'ホロライブ配信通知', master));
+  } catch (error) {
+    await Promise.all([releaseNotificationDeliveries(env, freshClaims), releaseNotificationDeliveries(env, changedClaims)]);
+    throw error;
+  }
+  if (!sentNew || !sentChanged) {
+    await Promise.all([releaseNotificationDeliveries(env, freshClaims), releaseNotificationDeliveries(env, changedClaims)]);
+    return history;
+  }
+  await Promise.all([completeNotificationDeliveries(env, freshClaims, now), completeNotificationDeliveries(env, changedClaims, now)]);
   return updateNotificationHistory(history, items);
 }
 
