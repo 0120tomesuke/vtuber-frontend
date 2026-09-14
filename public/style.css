@@ -805,7 +805,25 @@ body.menu-open #side-menu {
     margin-right: 12px !important; 
   }
 
-  .card-keyword { font-size: 12px; font-weight: 600; color: #94a3b8; }
+  .card-keyword {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    width: fit-content;
+    max-width: 100%;
+    font-size: 12px;
+    font-weight: 700;
+    color: #c4b5fd;
+  }
+  .card-keyword-label {
+    flex: 0 0 auto;
+    padding: 2px 5px;
+    border-radius: 999px;
+    background: rgba(139, 92, 246, .28);
+    color: #e9d5ff;
+    font-size: 10px;
+    letter-spacing: .04em;
+  }
 
   /* スマホもPCと同じく、同接は本文を圧迫せずサムネイル端に置く。 */
   .card:has(.label-live) .card-body,

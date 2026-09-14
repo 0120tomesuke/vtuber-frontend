@@ -281,11 +281,17 @@ async function updateFavorite(env, channelId, isFavorite) {
   await setState(env, 'master_cache', null);
   return true;
 }
-function isSpecial(title, keywords) {
+function eventMatch(title, keywords) {
   const text = normalizeTitle(title).replaceAll('#', ' ');
   if ((keywords['その他'] || []).some((word) => text.includes(normalizeTitle(word)))) return null;
-  return Object.entries(keywords).find(([category, words]) => category !== 'その他' && words.some((word) => text.includes(normalizeTitle(word))))?.[0] || null;
+  for (const [category, words] of Object.entries(keywords || {})) {
+    if (category === 'その他') continue;
+    const keyword = (words || []).find((word) => text.includes(normalizeTitle(word)));
+    if (keyword) return { category, keyword };
+  }
+  return null;
 }
+function isSpecial(title, keywords) { return eventMatch(title, keywords)?.category || null; }
 function formatDuration(seconds) {
   const total = Number(seconds || 0);
   if (!Number.isFinite(total) || total <= 0) return '';
@@ -376,7 +382,8 @@ function enrichGuestSignals(item, master) {
   });
   const allMentions = [...mentions.values()];
   const guests = allMentions.filter((mention) => mention.id !== item.channelId && roster[mention.id]).map((mention) => ({ name: String(roster[mention.id]?.name || normalizedTalentName(mention.name, master.talentMap)).trim(), icon: mention.photo || roster[mention.id]?.icon || '' })).filter((guest, index, list) => guest.name && list.findIndex((entry) => entry.name === guest.name) === index);
-  return { ...item, mentions: allMentions, guests, detectedMemberIds: [], mentionsKnown: Boolean(item.mentionsKnown) };
+  const event = eventMatch(item.title, master.eventKeywords);
+  return { ...item, mentions: allMentions, guests, keyword: event ? `${event.category}：${event.keyword}` : '', eventCategory: event?.category || '', detectedMemberIds: [], mentionsKnown: Boolean(item.mentionsKnown) };
 }
 function hasRosterConnection(item, globalIds) { return globalIds.has(item.channelId) || (item.guests || []).length > 0; }
 function isHolostarsChannel(channel) { return /holostars|ホロスターズ/i.test(`${channel?.org || ''} ${channel?.group || ''}`); }
