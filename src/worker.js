@@ -1015,28 +1015,23 @@ async function monitor(env) {
     const candidates = new Set(rss.filter((id) => !holodexIds.has(id) && !processedRssIds.includes(id)));
     const oneDayAgo = now - 86400000;
     previousAllUpcoming.forEach((item) => { const time = new Date(item.startTimeRaw).getTime(); if (!holodexIds.has(item.videoId) && (time > now || time >= oneDayAgo)) candidates.add(item.videoId); });
-    youtubeVideos = await youtubeDetails(env, [...candidates]);
+    // One batched videos.list call is enough for this supplemental RSS path.
+    // Leave the remainder for a later rotating scan instead of spending an
+    // unbounded amount of YouTube quota during a busy upload window.
+    const candidateIds = [...candidates].slice(0, 50);
+    youtubeVideos = await youtubeDetails(env, candidateIds);
     const valid = new Set(youtubeVideos.map((item) => item.videoId));
-    nextProcessed = [...new Set([...processedRssIds, ...[...candidates].filter((id) => !valid.has(id))])].slice(-5000);
+    nextProcessed = [...new Set([...processedRssIds, ...candidateIds.filter((id) => !valid.has(id))])].slice(-5000);
     nextRssCursor = rssBatch.nextCursor;
     scannedYoutube = true;
   }
   // A previously detected external stream is refreshed separately.  Once it no
   // longer has a Holodex guest or a title match, it must leave the list rather
   // than remain forever because of its old persisted state.
-  // YouTube is the authority for a stream's terminal status. Holodex may keep
-  // a finished video in /live briefly, so check both fresh candidates and the
-  // persisted LIVE list for 24 hours after their start. This remains one
-  // videos.list request (up to 50 IDs) per monitor run.
-  const liveStatusIds = [...new Map([...previousAllLive, ...favoriteVideos, ...holodexVideos]
-    .filter((item) => {
-      const start = new Date(item.startTimeRaw).getTime();
-      return !item.isEnded && Number.isFinite(start) && start >= now - 24 * 3600_000 && start <= now + 30 * 60_000;
-    })
-    .sort((a, b) => Number(Boolean(b.isLive)) - Number(Boolean(a.isLive)) || new Date(a.startTimeRaw) - new Date(b.startTimeRaw))
-    .map((item) => [item.videoId, item])).keys()].slice(0, 50);
-  const youtubeLiveStatus = await youtubeDetails(env, liveStatusIds, { includeEnded: true });
-  const all = merge([...holodexVideos, ...youtubeVideos, ...youtubeLiveStatus, ...guestRefresh.videos, ...favoriteVideos]).map((item) => enrichGuestSignals(item, master)).filter((item) => hasRosterConnection(item, globalIds) && shouldInclude(item, master));
+  // Holodex is the sole source of normal upcoming/LIVE/ended state and viewer
+  // counts, matching the former GAS monitor. YouTube is only a supplemental
+  // RSS path when Holodex has not returned a newly published video yet.
+  const all = merge([...holodexVideos, ...youtubeVideos, ...guestRefresh.videos, ...favoriteVideos]).map((item) => enrichGuestSignals(item, master)).filter((item) => hasRosterConnection(item, globalIds) && shouldInclude(item, master));
   const specialRaw = await holodex(env, '/live', { org: 'Hololive', include: 'mentions,description', max_upcoming_hours: '336' });
   const specialCandidates = specialRaw.filter((raw) => isSpecial(raw.title, master.eventKeywords));
   const allowedSpecialExternalIds = await allowedExternalChannelIds(env, specialCandidates, globalIds);
