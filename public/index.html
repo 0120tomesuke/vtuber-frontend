@@ -481,10 +481,23 @@
     const warning = responses.map((response) => response?.monitorError).find((value) => value?.message);
     const root = document.getElementById("monitor-warning");
     if (!root) return;
-    if (!warning) { root.style.display = "none"; root.textContent = ""; return; }
-    const at = warning.at ? new Date(warning.at).toLocaleString("ja-JP") : "時刻不明";
-    root.textContent = `⚠️ 配信情報の最新取得に失敗しました（${at}）。表示は前回取得分です。${warning.message}`;
-    root.style.display = "block";
+    if (warning) {
+      const at = warning.at ? new Date(warning.at).toLocaleString("ja-JP") : "時刻不明";
+      root.textContent = `⚠️ 配信情報の最新取得に失敗しました（${at}）。表示は前回取得分です。${warning.message}`;
+      root.style.display = "block";
+      return;
+    }
+    const runtime = responses.map((response) => ({ lastRun: Number(response?.monitorLastRun || 0), interval: Number(response?.monitorIntervalMs || 0) })).filter(({ lastRun }) => lastRun);
+    const latest = runtime.reduce((current, value) => value.lastRun > current.lastRun ? value : current, { lastRun: 0, interval: 0 });
+    const staleAfter = Math.max((latest.interval || 60_000) * 2 + 60_000, 3 * 60_000);
+    if (!latest.lastRun || Date.now() - latest.lastRun > staleAfter) {
+      const at = latest.lastRun ? new Date(latest.lastRun).toLocaleString("ja-JP") : "時刻不明";
+      root.textContent = `⚠️ 監視更新が止まっている可能性があります（最終成功: ${at}）。表示は前回取得分です。`;
+      root.style.display = "block";
+      return;
+    }
+    root.style.display = "none";
+    root.textContent = "";
   }
 
   /* ==========================================

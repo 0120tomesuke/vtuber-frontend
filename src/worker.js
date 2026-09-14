@@ -74,7 +74,24 @@ function durableVideo(item) {
   // in the canonical record makes the same video look changed in the all/ui
   // scopes and causes an unnecessary second write.
   const { previous, notificationKind, changedFields, passReason, ...video } = item;
+  // Concurrent viewers are volatile.  Persisting them in every video's JSON
+  // caused one indexed D1 UPDATE per LIVE stream per minute.  The current
+  // values live in monitor_runtime.liveSnapshot (one row per monitor pass)
+  // and are overlaid by the API below.  Finished cards keep their final peak.
+  if (item.isLive) {
+    const { viewers, liveViewersFormatted, ...stableVideo } = video;
+    return stableVideo;
+  }
   return video;
+}
+function applyLiveSnapshot(items, snapshot = {}) {
+  return (items || []).map((item) => {
+    if (!item?.isLive) return item;
+    const value = snapshot?.[item.videoId];
+    if (!value || !Number.isFinite(Number(value.viewers))) return item;
+    const viewers = Number(value.viewers);
+    return { ...item, viewers, liveViewersFormatted: viewers ? viewers.toLocaleString() : null };
+  });
 }
 function upsertVideo(env, item, now, dataJson = JSON.stringify(durableVideo(item))) {
   const status = statusOf(item);
@@ -162,17 +179,10 @@ async function bootstrapOperationalState(env) {
   await persistNotificationHistory(env, notificationHistory, now);
   await env.DB.prepare("INSERT INTO app_settings (setting_key, setting_value) VALUES ('operational_bootstrap', ?) ON CONFLICT(setting_key) DO NOTHING").bind(String(now)).run();
 }
-async function startMonitorRun(env, type, batchStart = null) {
-  if (!await operationalReady(env)) return null;
-  const result = await env.DB.prepare("INSERT INTO monitor_runs (started_at, run_type, rss_batch_start, status) VALUES (?, ?, ?, 'running')").bind(Date.now(), type, batchStart).run();
-  return result.meta?.last_row_id || null;
-}
-async function finishMonitorRun(env, id, status, discovered = 0, message = '') {
-  if (id) await env.DB.prepare('UPDATE monitor_runs SET finished_at=?, status=?, discovered_count=?, message=? WHERE id=?').bind(Date.now(), status, discovered, String(message || '').slice(0, 1000), id).run();
-}
-async function recordFailedMonitorRun(env, batchStart, message) {
+async function recordMonitorRun(env, status, batchStart = null, discovered = 0, message = '') {
+  if (!await operationalReady(env)) return;
   const now = Date.now();
-  await env.DB.prepare("INSERT INTO monitor_runs (started_at, finished_at, run_type, rss_batch_start, status, discovered_count, message) VALUES (?, ?, 'monitor', ?, 'failed', 0, ?)").bind(now, now, batchStart, String(message || '').slice(0, 1000)).run();
+  await env.DB.prepare("INSERT INTO monitor_runs (started_at, finished_at, run_type, rss_batch_start, status, discovered_count, message) VALUES (?, ?, 'monitor', ?, ?, ?, ?)").bind(now, now, batchStart, status, discovered, String(message || '').slice(0, 1000)).run();
 }
 
 function pemBytes(pem) {
@@ -427,10 +437,13 @@ function changedFields(item, previous) {
 }
 function isoDurationSeconds(value) { const match = /^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/.exec(value || ''); return match ? Number(match[1] || 0) * 3600 + Number(match[2] || 0) * 60 + Number(match[3] || 0) : 0; }
 function tokyoHour(date = new Date()) { return Number(new Intl.DateTimeFormat('en-US', { timeZone: TOKYO, hour: '2-digit', hourCycle: 'h23' }).format(date)); }
-function youtubeInterval() { return 55_000; }
+function isOffPeak(date = new Date()) { const hour = tokyoHour(date); return hour >= 2 && hour < 9; }
+function youtubeInterval(date = new Date()) { return monitorInterval(date); }
 // One 20-channel RSS batch per minute means roughly 100 channels are swept in
 // five minutes without exceeding Workers Free's 50 external-subrequest limit.
-function monitorInterval() { return 55_000; }
+// Start alerts still run from every Cron tick.  Only the expensive full
+// catalogue/viewer reconciliation slows down during the quietest JST hours.
+function monitorInterval(date = new Date()) { return isOffPeak(date) ? 5 * 60_000 : 55_000; }
 async function mapLimit(values, limit, fn) { let cursor = 0; await Promise.all(Array.from({ length: Math.min(limit, values.length) }, async () => { while (cursor < values.length) { const index = cursor++; await fn(values[index]); } })); }
 async function rssIds(channelIds) { const ids = new Set(); await mapLimit(channelIds, 6, async (channelId) => { try { const response = await fetch(`https://www.youtube.com/feeds/videos.xml?channel_id=${encodeURIComponent(channelId)}`); if (!response.ok) return; for (const match of (await response.text()).matchAll(/<yt:videoId>([a-zA-Z0-9_-]{11})<\/yt:videoId>/g)) ids.add(match[1]); } catch { /* A single RSS failure is non-fatal. */ } }); return [...ids]; }
 function rotatingBatch(values, cursor, size) {
@@ -452,7 +465,7 @@ function updateViewerBuffer(buffer, liveVideos, now) {
   liveVideos.forEach((item) => {
     const viewers = Number(item.viewers || String(item.liveViewersFormatted || '').replaceAll(',', '') || 0);
     const previous = next[item.videoId] || {};
-    next[item.videoId] = { peak: Math.max(Number(previous.peak || 0), viewers), time: now };
+    next[item.videoId] = { viewers, peak: Math.max(Number(previous.peak || 0), viewers), time: now };
   });
   return next;
 }
@@ -550,7 +563,7 @@ async function archiveStats(env, videoId, fallback, bufferedPeak = 0) {
       const response = await fetch(`https://www.googleapis.com/youtube/v3/videos?${query}`);
       return response.ok ? isoDurationSeconds((await response.json()).items?.[0]?.contentDetails?.duration) : 0;
     }, holodex(env, `/videos/${encodeURIComponent(videoId)}`)]);
-    const peak = Number(storedPeak?.peak_viewers || 0) || Number(bufferedPeak) || Number(detail.status === 'fulfilled' ? detail.value?.live_viewers : 0) || Number(String(fallback.liveViewersFormatted || 0).replaceAll(',', '')) || 0;
+    const peak = Math.max(Number(storedPeak?.peak_viewers || 0), Number(bufferedPeak || 0), Number(detail.status === 'fulfilled' ? detail.value?.live_viewers : 0), Number(String(fallback.liveViewersFormatted || 0).replaceAll(',', '')) || 0);
     return { duration: youtube.status === 'fulfilled' ? youtube.value : 0, peak };
   })();
   cache.set(videoId, task);
@@ -993,7 +1006,7 @@ async function monitor(env) {
     const [lastRun, processedRssIds, lastYoutubeScan, rssCursor, guestRefreshCursors] = await Promise.all([
       getState(env, 'last_monitor_run', 0), getState(env, 'processed_rss_ids', []), getState(env, 'last_youtube_scan', 0), getState(env, 'rss_channel_cursor', 0), getState(env, 'holodex_guest_refresh_cursor', { live: 0, upcoming: 0, ended: 0 })
     ]);
-    runtime = { lastRun, processedRssIds, lastYoutubeScan, rssCursor, guestRefreshCursors };
+    runtime = { lastRun, processedRssIds, lastYoutubeScan, rssCursor, guestRefreshCursors, liveSnapshot: {} };
   }
   const lastRun = runtime.lastRun || 0;
   if (now - Number(lastRun || 0) < monitorInterval(new Date(now))) return { ran: false, discovered: 0 };
@@ -1021,6 +1034,9 @@ async function monitor(env) {
   const previousAllLive = dbAllLive ?? legacyAllLive; const previousAllUpcoming = dbAllUpcoming ?? legacyAllUpcoming; const previousAllEnded = dbAllEnded ?? legacyAllEnded;
   const previousUiLive = dbUiLive ?? legacyUiLive; const previousUiUpcoming = dbUiUpcoming ?? legacyUiUpcoming; const previousUiEnded = dbUiEnded ?? legacyUiEnded;
   const notificationHistory = dbNotificationHistory ?? legacyNotificationHistory;
+  // One compact runtime row carries live viewers and their in-progress peak.
+  // This replaces indexed per-video writes on every viewer fluctuation.
+  const liveSnapshot = runtime.liveSnapshot && typeof runtime.liveSnapshot === 'object' ? runtime.liveSnapshot : viewerBuffer;
   // Holodex can add mentions while a stream is already running (for example,
   // a surprise guest in a 凸待ち). Refresh tracked videos separately from RSS.
   const guestRefresh = await refreshTrackedGuests(env, { live: previousAllLive, upcoming: previousAllUpcoming, ended: previousAllEnded }, globalIds, master.talentMap, guestRefreshCursors || {});
@@ -1076,12 +1092,12 @@ async function monitor(env) {
       ...previousEnded.filter((item) => !item.durationLabel && new Date(item.startTimeRaw).getTime() >= now - 24 * 3600_000)
     ].map((item) => [item.videoId, item])).values()].filter((item) => !previousEndedById.get(item.videoId)?.durationLabel);
     const [disappeared, archivedExplicit] = await Promise.all([
-      endedFrom([...previousLive, ...previousUpcoming], items, env, keep, viewerBuffer),
+      endedFrom([...previousLive, ...previousUpcoming], items, env, keep, liveSnapshot),
       // Holodex can report `past` before it exposes a duration.  Treat that
       // transition exactly like a disappeared LIVE entry and obtain the final
       // duration from YouTube once, rather than leaving a blank badge.
       Promise.all(durationTargets.map(async (item) => {
-        const stats = await archiveStats(env, item.videoId, item, viewerBuffer[item.videoId]?.peak);
+        const stats = await archiveStats(env, item.videoId, item, liveSnapshot[item.videoId]?.peak);
         return { ...item, liveViewersFormatted: stats.peak ? Number(stats.peak).toLocaleString() : item.liveViewersFormatted, durationLabel: stats.duration ? formatDuration(stats.duration) : item.durationLabel };
       }))
     ]);
@@ -1097,13 +1113,14 @@ async function monitor(env) {
     return { live, upcoming, ended };
   };
   const [allState, uiState] = await Promise.all([split(all, previousAllLive, previousAllUpcoming, previousAllEnded), split(classifiedFavorites, previousUiLive, previousUiUpcoming, previousUiEnded)]);
+  const nextLiveSnapshot = updateViewerBuffer(liveSnapshot, allState.live, now);
   await syncViewerBufferSheet(env, allState.live, now);
   // A notification provider outage must never discard a successful monitor result.
   const relational = relationalStore;
   await persistVideoStates(env, { allLive: allState.live, allUpcoming: allState.upcoming, allEnded: allState.ended, uiLive: uiState.live, uiUpcoming: uiState.upcoming, uiEnded: uiState.ended }, now);
   await recordViewerSamples(env, allState.live, now);
-  const nextRuntime = { lastRun: now, processedRssIds: nextProcessed, rssCursor: scannedYoutube ? nextRssCursor : rssCursor, guestRefreshCursors: guestRefresh.cursors, lastYoutubeScan: scannedYoutube ? now : lastYoutubeScan };
-  await setStatesIfChanged(env, { ...(relational ? {} : { all_live: allState.live, all_upcoming: allState.upcoming, all_ended: allState.ended, ui_live: uiState.live, ui_upcoming: uiState.upcoming, ui_ended: uiState.ended, notification_history: notificationHistory, viewer_buffer: updateViewerBuffer(viewerBuffer, allState.live, now) }), monitor_runtime: nextRuntime, ...(monitorError ? { monitor_error: null } : {}) }, { ...(relational ? {} : { all_live: legacyAllLive, all_upcoming: legacyAllUpcoming, all_ended: legacyAllEnded, ui_live: legacyUiLive, ui_upcoming: legacyUiUpcoming, ui_ended: legacyUiEnded, notification_history: legacyNotificationHistory, viewer_buffer: viewerBuffer }), monitor_runtime: runtime, monitor_error: monitorError });
+  const nextRuntime = { lastRun: now, processedRssIds: nextProcessed, rssCursor: scannedYoutube ? nextRssCursor : rssCursor, guestRefreshCursors: guestRefresh.cursors, lastYoutubeScan: scannedYoutube ? now : lastYoutubeScan, liveSnapshot: nextLiveSnapshot };
+  await setStatesIfChanged(env, { ...(relational ? {} : { all_live: allState.live, all_upcoming: allState.upcoming, all_ended: allState.ended, ui_live: uiState.live, ui_upcoming: uiState.upcoming, ui_ended: uiState.ended, notification_history: notificationHistory, viewer_buffer: nextLiveSnapshot }), monitor_runtime: nextRuntime, ...(monitorError ? { monitor_error: null } : {}) }, { ...(relational ? {} : { all_live: legacyAllLive, all_upcoming: legacyAllUpcoming, all_ended: legacyAllEnded, ui_live: legacyUiLive, ui_upcoming: legacyUiUpcoming, ui_ended: legacyUiEnded, notification_history: legacyNotificationHistory, viewer_buffer: viewerBuffer }), monitor_runtime: runtime, monitor_error: monitorError });
   try {
     const nextHistory = await notifyChanges(env, classifiedFavorites, notificationHistory, master);
     if (nextHistory !== notificationHistory) relational ? await persistNotificationHistory(env, nextHistory, now) : await setState(env, 'notification_history', nextHistory);
@@ -1116,7 +1133,10 @@ async function monitor(env) {
 async function runScheduledMonitor(env, notificationTime = Date.now()) {
   const attemptedAt = new Date().toISOString();
   const now = Date.now();
-  let monitorRunId = null;
+  const bestEffort = async (label, task) => {
+    try { await task(); }
+    catch (error) { console.error(label, error); }
+  };
   // These were separate GAS triggers. Keeping them with the queue consumer
   // removes their D1 work from the 10 ms Free-plan cron invocation.
   for (const [key, interval, task] of [
@@ -1127,36 +1147,38 @@ async function runScheduledMonitor(env, notificationTime = Date.now()) {
     try { await runPeriodicMaintenance(env, key, interval, task, now); }
     catch (error) {
       console.error('Scheduled maintenance failed.', error);
-      await setState(env, 'maintenance_error', { message: error.message || 'Scheduled maintenance failed', at: attemptedAt });
+      await bestEffort('Could not save maintenance error.', () => setState(env, 'maintenance_error', { message: error.message || 'Scheduled maintenance failed', at: attemptedAt }));
     }
   }
+
+  // A start-alert outage must not prevent the independent full monitor from
+  // refreshing live state.  This runs every Cron minute, including off-peak.
   try {
-    // Start alerts have a narrow two-minute window. Run their independent
-    // lookup before the heavier full monitor so a slow RSS/YouTube pass
-    // cannot make a valid alert arrive late or miss its window.
-    // Queue delivery may occur after its originating cron minute. Use that
-    // cron timestamp for the narrow start-alert window, not the delayed
-    // consumer wall-clock time.
     if (Date.now() - Number(notificationTime || 0) <= 3 * 60_000) await notifyJustBeforeStart(env, notificationTime);
+  } catch (error) {
+    console.error('Start-alert check failed.', error);
+    await bestEffort('Could not save start-alert error.', () => setState(env, 'imminent_notification_error', { message: error.message || 'Start-alert check failed', at: attemptedAt }));
+  }
+
+  let batchStart = 0;
+  try {
     const runtime = await getState(env, 'monitor_runtime', null);
-    const batchStart = Number(runtime?.rssCursor || await getState(env, 'rss_channel_cursor', 0));
-    // The history screen remains useful without charging two D1 writes for
-    // every healthy minute. Failures are still recorded individually.
+    batchStart = Number(runtime?.rssCursor || await getState(env, 'rss_channel_cursor', 0));
+    // Log one completed success every 15 minutes.  Do not create a "running"
+    // row before monitoring: if D1 is unavailable, unfinished rows used to
+    // trigger Queue retries and rapidly amplified the write pressure.
     const lastRecorded = await getState(env, 'last_successful_monitor_log', 0);
     const monitorDue = now - Number(runtime?.lastRun || 0) >= monitorInterval(new Date(now));
     const recordSuccess = monitorDue && now - Number(lastRecorded || 0) >= 15 * 60_000;
-    if (recordSuccess) monitorRunId = await startMonitorRun(env, 'monitor', batchStart);
     const result = await monitor(env);
-    await finishMonitorRun(env, monitorRunId, result?.ran ? 'success' : 'skipped', result?.discovered || 0);
-    if (monitorRunId && result?.ran) await setState(env, 'last_successful_monitor_log', now);
+    if (recordSuccess && result?.ran) {
+      await bestEffort('Could not record monitor success.', () => recordMonitorRun(env, 'success', batchStart, result.discovered || 0));
+      await bestEffort('Could not update monitor log cursor.', () => setState(env, 'last_successful_monitor_log', now));
+    }
   } catch (error) {
     console.error('Scheduled monitor failed.', error);
-    if (monitorRunId) await finishMonitorRun(env, monitorRunId, 'failed', 0, error.message || 'Scheduled monitor failed');
-    else await recordFailedMonitorRun(env, Number((await getState(env, 'monitor_runtime', {}))?.rssCursor || 0), error.message || 'Scheduled monitor failed');
-    await setState(env, 'monitor_error', {
-      message: error.message || 'Scheduled monitor failed',
-      at: attemptedAt
-    });
+    await bestEffort('Could not record monitor failure.', () => recordMonitorRun(env, 'failed', batchStart, 0, error.message || 'Scheduled monitor failed'));
+    await bestEffort('Could not save monitor error.', () => setState(env, 'monitor_error', { message: error.message || 'Scheduled monitor failed', at: attemptedAt }));
   }
 }
 function isAdmin(request, env) {
@@ -1224,13 +1246,13 @@ async function api(request, env, url) {
   if (url.pathname === '/api/videos' || legacyAll) {
     const all = url.searchParams.get('mode') === 'all'; const master = await masters(env);
     const scope = all ? 'all' : 'ui';
-    const [dbLive, dbUpcoming, dbEnded, monitorError] = await Promise.all([readVideoState(env, scope, 'live'), readVideoState(env, scope, 'upcoming'), readVideoState(env, scope, 'ended'), getState(env, 'monitor_error', null)]);
+    const [dbLive, dbUpcoming, dbEnded, monitorError, runtime] = await Promise.all([readVideoState(env, scope, 'live'), readVideoState(env, scope, 'upcoming'), readVideoState(env, scope, 'ended'), getState(env, 'monitor_error', null), getState(env, 'monitor_runtime', {})]);
     const [legacyLive, legacyUpcoming, legacyEnded] = dbLive === null ? await Promise.all([getState(env, all ? 'all_live' : 'ui_live', []), getState(env, all ? 'all_upcoming' : 'ui_upcoming', []), getState(env, all ? 'all_ended' : 'ui_ended', [])]) : [[], [], []];
-    const live = dbLive ?? legacyLive; const upcoming = dbUpcoming ?? legacyUpcoming; const ended = dbEnded ?? legacyEnded;
+    const live = applyLiveSnapshot(dbLive ?? legacyLive, runtime?.liveSnapshot); const upcoming = dbUpcoming ?? legacyUpcoming; const ended = dbEnded ?? legacyEnded;
     const videos = all ? [...live, ...upcoming] : [...live, ...upcoming, ...ended];
     // Monitoring failures are response metadata, not pseudo-video rows. This
     // keeps the UI warning visible instead of having its data sanitizer drop it.
-    return json({ videos, live, upcoming, ended, favorites: Object.keys(master.favorites), monitorError: monitorError?.message ? monitorError : null, ...(all ? { lastUpdate: new Date().toISOString() } : {}) });
+    return json({ videos, live, upcoming, ended, favorites: Object.keys(master.favorites), monitorError: monitorError?.message ? monitorError : null, monitorLastRun: Number(runtime?.lastRun || 0) || null, monitorIntervalMs: monitorInterval(new Date()), ...(all ? { lastUpdate: new Date().toISOString() } : {}) });
   }
   const viewerMatch = /^\/api\/videos\/([^/]+)\/viewers$/.exec(url.pathname);
   if (request.method === 'GET' && viewerMatch) {
@@ -1272,8 +1294,16 @@ export default {
   },
   async queue(batch, env) {
     for (const message of batch.messages) {
-      await runScheduledMonitor(env, Number(message.body?.requestedAt) || Date.now());
-      message.ack();
+      try {
+        await runScheduledMonitor(env, Number(message.body?.requestedAt) || Date.now());
+      } catch (error) {
+        // The next Cron minute is a fresh monitoring opportunity.  Retrying a
+        // failed message twice immediately created a write storm when D1 was
+        // near its daily cap, so acknowledge after recording/logging the error.
+        console.error('Queue monitor escaped its error boundary.', error);
+      } finally {
+        message.ack();
+      }
     }
   }
 };
