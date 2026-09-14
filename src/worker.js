@@ -550,10 +550,17 @@ function notificationTarget(item, master) {
   return Boolean(item.isSpecial || favoriteIds.has(item.channelId) || (item.mentions || []).some((mention) => favoriteIds.has(mention.id)));
 }
 
-function shouldSendChanged(item, now) {
-  if (item.changedFields?.includes('タイトル')) return true;
-  if (item.changedFields?.includes('ゲスト')) return true;
-  if (!item.changedFields?.includes('開始時刻') || !item.startTimeRaw) return true;
+function addedFavoriteGuests(item, master) {
+  const favoriteIds = new Set(Object.keys(master.favorites || {}));
+  const before = new Set((item.previous?.mentions || []).map((mention) => mention?.id).filter((id) => favoriteIds.has(id)));
+  return (item.mentions || []).filter((mention) => mention?.id && favoriteIds.has(mention.id) && !before.has(mention.id));
+}
+function shouldSendChanged(item, now, master) {
+  const changes = item.changedFields || [];
+  if (changes.includes('タイトル')) return true;
+  if (changes.includes('ゲスト') && addedFavoriteGuests(item, master).length) return true;
+  if (!changes.includes('開始時刻') || !item.startTimeRaw) return false;
+  // Archive/history corrections are useful in the UI, but not by email.
   return new Date(item.startTimeRaw).getTime() > now;
 }
 
@@ -589,8 +596,8 @@ function changeDetail(item, master) {
   if (item.changedFields.includes('タイトル')) lines.push(`タイトル: 「${previous.title || ''}」 → 「${item.title}」`);
   if (item.changedFields.includes('開始時刻')) lines.push(`開始時刻: ${format(previous.startTimeRaw)} → ${item.startTime}`);
   if (item.changedFields.includes('ゲスト')) {
-    const names = (mentions) => [...new Set((mentions || []).map((mention) => mentionDisplayName(mention, master)).filter(Boolean))].join('・') || 'なし';
-    lines.push(`ゲスト: ${names(previous.mentions)} → ${names(item.mentions)}`);
+    const added = addedFavoriteGuests(item, master).map((mention) => mentionDisplayName(mention, master)).filter(Boolean);
+    if (added.length) lines.push(`お気に入りゲスト追加: ${[...new Set(added)].join('・')}`);
   }
   return lines.length ? `<div style="font-size:14px;color:#d00;margin:6px 0 10px;line-height:1.4">${lines.map(html).join('<br>')}</div>` : '';
 }
@@ -808,7 +815,7 @@ async function notifyChanges(env, items, history, master) {
   if (!settings.notifications_enabled) return updateNotificationHistory(history, items);
   const candidates = items.filter((item) => item.notificationKind && notificationTarget(item, master));
   const fresh = settings.notify_new ? candidates.filter((item) => item.notificationKind === 'new') : [];
-  const changed = settings.notify_changed ? candidates.filter((item) => item.notificationKind === 'changed' && shouldSendChanged(item, now)) : [];
+  const changed = settings.notify_changed ? candidates.filter((item) => item.notificationKind === 'changed' && shouldSendChanged(item, now, master)) : [];
   const newSubject = `新規：${subjectSummary(fresh, 'new', master.talentMap)}`;
   const changedSubject = `変更：${subjectSummary(changed, 'changed', master.talentMap)}`;
   const sentNew = fresh.length ? await sendAndLog(env, 'new', newSubject, fresh, () => sendEmail(env, newSubject, fresh, 'ホロライブ新規配信通知', master)) : false;
