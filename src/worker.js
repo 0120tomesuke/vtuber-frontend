@@ -871,7 +871,9 @@ async function notifyJustBeforeStart(env) {
     candidates.forEach((item) => {
       const reason = imminentReason(item, master); if (!reason || cleanedHistory[item.videoId]?.notified_imminent) return;
       const diffMinutes = (new Date(item.startTimeRaw).getTime() - now) / 60_000; const withReason = { ...item, passReason: reason };
-      if (item.isLive && diffMinutes > 0) early.push(withReason);
+      // If Holodex flips to live at the exact scheduled minute, it still
+      // belongs to the requested "two minutes before through start" window.
+      if (item.isLive && diffMinutes >= 0) early.push(withReason);
       else if (!item.isLive && diffMinutes >= 0 && diffMinutes <= PRE_START_WINDOW_MINUTES) scheduled.push(withReason);
     });
     const next = { ...cleanedHistory };
@@ -1015,6 +1017,10 @@ async function runScheduledMonitor(env) {
     }
   }
   try {
+    // Start alerts have a narrow two-minute window. Run their independent
+    // lookup before the heavier full monitor so a slow RSS/YouTube pass
+    // cannot make a valid alert arrive late or miss its window.
+    await notifyJustBeforeStart(env);
     const runtime = await getState(env, 'monitor_runtime', null);
     const batchStart = Number(runtime?.rssCursor || await getState(env, 'rss_channel_cursor', 0));
     // The history screen remains useful without charging two D1 writes for
@@ -1026,7 +1032,6 @@ async function runScheduledMonitor(env) {
     const result = await monitor(env);
     await finishMonitorRun(env, monitorRunId, result?.ran ? 'success' : 'skipped', result?.discovered || 0);
     if (monitorRunId && result?.ran) await setState(env, 'last_successful_monitor_log', now);
-    await notifyJustBeforeStart(env);
   } catch (error) {
     console.error('Scheduled monitor failed.', error);
     if (monitorRunId) await finishMonitorRun(env, monitorRunId, 'failed', 0, error.message || 'Scheduled monitor failed');
