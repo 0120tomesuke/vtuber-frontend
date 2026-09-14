@@ -808,21 +808,23 @@ body.menu-open #side-menu {
   .card-keyword { font-size: 12px; font-weight: 600; color: #94a3b8; }
 
   /* スマホもPCと同じく、同接は本文を圧迫せずサムネイル端に置く。 */
+  .card:has(.label-live) .card-body,
+  .card:has(.label-ended) .card-body { position: static; }
   .card:has(.label-live) .live-viewers:not(.ended-stats),
   .card:has(.label-ended) .live-viewers.ended-stats {
     position: absolute !important;
-    top: calc(56.25cqw - 30px) !important;
+    top: calc(56.25cqw - 25px) !important;
     z-index: 21;
     display: inline-flex !important;
     align-items: center;
-    gap: 4px;
+    gap: 3px;
     margin: 0 !important;
-    padding: 4px 6px !important;
-    border-radius: 6px !important;
+    padding: 3px 5px !important;
+    border-radius: 5px !important;
     background: linear-gradient(135deg, rgba(15, 23, 42, .82), rgba(30, 41, 59, .88)) !important;
     box-shadow: inset 0 1px 0 rgba(255,255,255,.08), 0 2px 8px rgba(0,0,0,.25) !important;
     color: #f8fafc !important;
-    font-size: 10px !important;
+    font-size: 9px !important;
     font-weight: 700;
     line-height: 1 !important;
     text-shadow: none !important;
@@ -839,12 +841,12 @@ body.menu-open #side-menu {
     border: 1px solid rgba(56, 189, 248, .58) !important;
   }
   .card:has(.label-live) .live-viewers:not(.ended-stats) strong,
-  .card:has(.label-ended) .live-viewers.ended-stats strong { color: #fff; font-size: 13px; letter-spacing: .03em; }
+  .card:has(.label-ended) .live-viewers.ended-stats strong { color: #fff; font-size: 11px !important; letter-spacing: .03em; }
   .card:has(.label-live) .viewer-label { color: #fda4af; }
   .card:has(.label-ended) .ended-stat-label { color: #7dd3fc; }
   .card:has(.label-live) .viewer-live-dot {
-    width: 6px;
-    height: 6px;
+    width: 5px;
+    height: 5px;
     border-radius: 50%;
     background: var(--live-danger);
     box-shadow: 0 0 7px rgba(255, 77, 125, .9);
@@ -853,11 +855,11 @@ body.menu-open #side-menu {
   .card:has(.label-live) .live-viewers:not(.ended-stats) .viewer-chart-btn,
   .card:has(.label-ended) .live-viewers.ended-stats .viewer-chart-btn {
     margin-left: 1px;
-    padding: 1px 3px;
+    padding: 1px 2px;
     border: 0;
     border-left: 1px solid rgba(255,255,255,.16);
     border-radius: 0;
-    font-size: 9px;
+    font-size: 8px;
     font-weight: 800;
   }
   .card:has(.label-live) .live-viewers:not(.ended-stats) .viewer-chart-btn { color: #bae6fd; }
