@@ -56,6 +56,11 @@ async function operationalReady(env) {
   if (!operationalReadyCache.has(env)) operationalReadyCache.set(env, env.DB.prepare('SELECT 1 FROM channels LIMIT 1').first().then(() => true).catch(() => false));
   return operationalReadyCache.get(env);
 }
+const externalClassificationReadyCache = new WeakMap();
+async function externalClassificationReady(env) {
+  if (!externalClassificationReadyCache.has(env)) externalClassificationReadyCache.set(env, env.DB.prepare('SELECT 1 FROM external_channel_classifications LIMIT 1').first().then(() => true).catch(() => false));
+  return externalClassificationReadyCache.get(env);
+}
 function statusOf(item) { return item.isEnded ? 'ended' : item.isLive ? 'live' : 'upcoming'; }
 async function readVideoState(env, scope, status) {
   if (!await operationalReady(env)) return null;
@@ -266,7 +271,7 @@ function video(raw, globalIds, talentMap) {
   const start = raw.start_actual || raw.actual_start || raw.start_scheduled || raw.available_at;
   const external = globalIds && !globalIds.has(raw.channel?.id);
   const guests = (raw.mentions || []).filter((mention) => globalIds?.has(mention.id)).map((mention) => ({ name: normalizedTalentName(mention.name, talentMap || {}), icon: mention.photo || '' })).filter((guest, index, list) => list.findIndex((item) => item.name === guest.name) === index);
-  return { videoId: raw.id, title: raw.title || '', channelTitle: external ? `(外) ${raw.channel?.name || ''}` : raw.channel?.name || '', channelId: raw.channel?.id || '', channelIcon: raw.channel?.photo || '', thumbnail: `https://i.ytimg.com/vi/${raw.id}/hqdefault.jpg`, videoUrl: `https://www.youtube.com/watch?v=${raw.id}`, viewers: raw.live_viewers || 0, liveViewersFormatted: raw.live_viewers ? Number(raw.live_viewers).toLocaleString() : null, startTimeRaw: start, startTime: start ? format(start) : '未定', dateKey: start ? format(start, true) : '', isLive: raw.status === 'live', isEnded: raw.status === 'past', durationLabel: formatDuration(raw.duration), mentions: raw.mentions || [], mentionsKnown: Array.isArray(raw.mentions), guests, source: 'holodex', priority: 1 };
+  return { videoId: raw.id, title: raw.title || '', description: String(raw.description || '').slice(0, 6000), channelTitle: external ? `(外) ${raw.channel?.name || ''}` : raw.channel?.name || '', channelId: raw.channel?.id || '', channelIcon: raw.channel?.photo || '', thumbnail: `https://i.ytimg.com/vi/${raw.id}/hqdefault.jpg`, videoUrl: `https://www.youtube.com/watch?v=${raw.id}`, viewers: raw.live_viewers || 0, liveViewersFormatted: raw.live_viewers ? Number(raw.live_viewers).toLocaleString() : null, startTimeRaw: start, startTime: start ? format(start) : '未定', dateKey: start ? format(start, true) : '', isLive: raw.status === 'live', isEnded: raw.status === 'past', durationLabel: formatDuration(raw.duration), mentions: raw.mentions || [], mentionsKnown: Array.isArray(raw.mentions), guests, source: 'holodex', priority: 1 };
 }
 async function holodex(env, path, parameters) {
   const url = new URL(`${HOLODEX}${path}`); Object.entries(parameters || {}).forEach(([key, value]) => url.searchParams.set(key, value));
@@ -316,7 +321,7 @@ async function refreshTrackedGuests(env, states, globalIds, talentMap, cursors) 
   const videos = [];
   await mapLimit(targets, 4, async (item) => {
     try {
-      const raw = await holodex(env, `/videos/${encodeURIComponent(item.videoId)}`, { include: 'mentions' });
+      const raw = await holodex(env, `/videos/${encodeURIComponent(item.videoId)}`, { include: 'mentions,description' });
       if (raw?.id) videos.push({ ...video(raw, globalIds, talentMap), isSpecial: Boolean(item.isSpecial) });
     } catch (error) {
       // A deleted/private video must not abort the rest of this monitor run.
@@ -330,6 +335,46 @@ function target(item, master) { if (primaryTarget(item, master)) return true; re
 function shouldInclude(item, master) { if (Object.hasOwn(master.favorites, item.channelId)) return true; const title = normalizeTitle(item.title); if ((master.excludeWords || []).some((word) => title.includes(normalizeTitle(word)))) return false; return !(master.excludes || []).includes(item.channelId); }
 function isWithin72Hours(value, now) { const diff = new Date(value).getTime() - now; return diff >= -3 * 3600_000 && diff <= 72 * 3600_000; }
 function normalizeTitle(value) { return String(value || '').normalize('NFKC').replace(/\s+/g, ' ').trim().toLowerCase(); }
+function enrichGuestSignals(item, master) {
+  const roster = master.global || {};
+  const mentions = new Map((item.mentions || []).filter((mention) => mention?.id).map((mention) => [mention.id, mention]));
+  const titleAndDescription = normalizeTitle(`${item.title || ''}\n${item.description || ''}`);
+  const rawDescription = String(item.description || '').toLowerCase();
+  let inferred = false;
+  Object.entries(roster).forEach(([channelId, channel]) => {
+    if (channelId === item.channelId || mentions.has(channelId)) return;
+    const name = String(channel?.name || '').trim();
+    const mentionedByName = name.length >= 3 && titleAndDescription.includes(normalizeTitle(name));
+    const mentionedByChannelUrl = rawDescription.includes(channelId.toLowerCase());
+    if (mentionedByName || mentionedByChannelUrl) {
+      mentions.set(channelId, { id: channelId, name, inferred_from: mentionedByName ? 'title_or_description' : 'description_channel_url' });
+      inferred = true;
+    }
+  });
+  const allMentions = [...mentions.values()];
+  const guests = allMentions.filter((mention) => mention.id !== item.channelId && roster[mention.id]).map((mention) => ({ name: String(roster[mention.id]?.name || normalizedTalentName(mention.name, master.talentMap)).trim(), icon: mention.photo || '' })).filter((guest, index, list) => guest.name && list.findIndex((entry) => entry.name === guest.name) === index);
+  return { ...item, mentions: allMentions, guests, mentionsKnown: Boolean(item.mentionsKnown || inferred) };
+}
+function isHolostarsChannel(channel) { return /holostars|ホロスターズ/i.test(`${channel?.org || ''} ${channel?.group || ''}`); }
+async function allowedExternalChannelIds(env, rawVideos, globalIds) {
+  const externalIds = [...new Set(rawVideos.map((raw) => raw.channel?.id).filter((id) => id && !globalIds.has(id)))];
+  if (!externalIds.length) return new Set();
+  if (!await externalClassificationReady(env)) return new Set();
+  const rows = await queryAll(env, `SELECT channel_id, is_holostars FROM external_channel_classifications WHERE channel_id IN (${externalIds.map(() => '?').join(',')})`, ...externalIds);
+  const decisions = new Map(rows.map((row) => [row.channel_id, Number(row.is_holostars)]));
+  const unknown = externalIds.filter((id) => !decisions.has(id)).slice(0, 4);
+  const statements = [];
+  await mapLimit(unknown, 4, async (channelId) => {
+    try {
+      const channel = await holodex(env, `/channels/${encodeURIComponent(channelId)}`);
+      const isHolostars = isHolostarsChannel(channel) ? 1 : 0;
+      decisions.set(channelId, isHolostars);
+      statements.push(env.DB.prepare('INSERT INTO external_channel_classifications (channel_id, org, group_name, is_holostars, checked_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(channel_id) DO NOTHING').bind(channelId, String(channel?.org || ''), String(channel?.group || ''), isHolostars, Date.now()));
+    } catch (error) { console.warn('External channel classification failed.', channelId, error.message || error); }
+  });
+  if (statements.length) await env.DB.batch(statements);
+  return new Set(externalIds.filter((id) => decisions.get(id) === 0));
+}
 function distance(left, right) { const a = String(left || ''); const b = String(right || ''); if (!a || !b) return Infinity; const row = Array.from({ length: b.length + 1 }, (_, i) => i); for (let i = 1; i <= a.length; i += 1) { let previous = row[0]; row[0] = i; for (let j = 1; j <= b.length; j += 1) { const current = row[j]; row[j] = Math.min(row[j] + 1, row[j - 1] + 1, previous + (a[i - 1] === b[j - 1] ? 0 : 1)); previous = current; } } return row[b.length]; }
 function changedFields(item, previous) {
   if (!previous) return [];
@@ -360,7 +405,7 @@ function prioritizedRssBatch(channelIds, master, cursor, size) {
   const regularPart = rotatingBatch(regular, cursor, size - priorityPart.length);
   return { channels: [...priorityPart, ...regularPart], nextCursor: regular.length ? (Number(cursor || 0) + regularPart.length) % regular.length : 0 };
 }
-async function youtubeDetails(env, ids) { if (!env.YOUTUBE_API_KEY || !ids.length) return []; const chunks = Array.from({ length: Math.ceil(ids.length / 50) }, (_, i) => ids.slice(i * 50, i * 50 + 50)); const cutoff = Date.now() + 14 * 86400000; const results = await Promise.all(chunks.map(async (chunk) => { const query = new URLSearchParams({ part: 'snippet,liveStreamingDetails', id: chunk.join(','), key: env.YOUTUBE_API_KEY }); const response = await fetch(`https://www.googleapis.com/youtube/v3/videos?${query}`); if (!response.ok) throw new Error(`YouTube API failed: ${response.status}`); return (await response.json()).items || []; })); return results.flat().flatMap((item) => { const details = item.liveStreamingDetails; const live = item.snippet?.liveBroadcastContent === 'live'; const ended = item.snippet?.liveBroadcastContent === 'none' && Boolean(details?.actualEndTime); if (!details || ended) return []; const startTimeRaw = details.actualStartTime || details.scheduledStartTime || item.snippet?.publishedAt; if (!live && new Date(startTimeRaw).getTime() > cutoff) return []; return [{ videoId: item.id, title: item.snippet?.title || '', channelTitle: item.snippet?.channelTitle || '', channelId: item.snippet?.channelId || '', channelIcon: item.snippet?.thumbnails?.default?.url || '', thumbnail: `https://i.ytimg.com/vi/${item.id}/hqdefault.jpg`, videoUrl: `https://www.youtube.com/watch?v=${item.id}`, viewers: Number(details.concurrentViewers || 0), liveViewersFormatted: details.concurrentViewers ? Number(details.concurrentViewers).toLocaleString() : null, startTimeRaw, startTime: format(startTimeRaw), dateKey: format(startTimeRaw, true), isLive: live, isEnded: false, mentions: [], guests: [], source: 'youtube_api', priority: 3 }]; }); }
+async function youtubeDetails(env, ids) { if (!env.YOUTUBE_API_KEY || !ids.length) return []; const chunks = Array.from({ length: Math.ceil(ids.length / 50) }, (_, i) => ids.slice(i * 50, i * 50 + 50)); const cutoff = Date.now() + 14 * 86400000; const results = await Promise.all(chunks.map(async (chunk) => { const query = new URLSearchParams({ part: 'snippet,liveStreamingDetails', id: chunk.join(','), key: env.YOUTUBE_API_KEY }); const response = await fetch(`https://www.googleapis.com/youtube/v3/videos?${query}`); if (!response.ok) throw new Error(`YouTube API failed: ${response.status}`); return (await response.json()).items || []; })); return results.flat().flatMap((item) => { const details = item.liveStreamingDetails; const live = item.snippet?.liveBroadcastContent === 'live'; const ended = item.snippet?.liveBroadcastContent === 'none' && Boolean(details?.actualEndTime); if (!details || ended) return []; const startTimeRaw = details.actualStartTime || details.scheduledStartTime || item.snippet?.publishedAt; if (!live && new Date(startTimeRaw).getTime() > cutoff) return []; return [{ videoId: item.id, title: item.snippet?.title || '', description: String(item.snippet?.description || '').slice(0, 6000), channelTitle: item.snippet?.channelTitle || '', channelId: item.snippet?.channelId || '', channelIcon: item.snippet?.thumbnails?.default?.url || '', thumbnail: `https://i.ytimg.com/vi/${item.id}/hqdefault.jpg`, videoUrl: `https://www.youtube.com/watch?v=${item.id}`, viewers: Number(details.concurrentViewers || 0), liveViewersFormatted: details.concurrentViewers ? Number(details.concurrentViewers).toLocaleString() : null, startTimeRaw, startTime: format(startTimeRaw), dateKey: format(startTimeRaw, true), isLive: live, isEnded: false, mentions: [], guests: [], source: 'youtube_api', priority: 3 }]; }); }
 function updateViewerBuffer(buffer, liveVideos, now) {
   const threshold = now - 12 * 3600_000;
   const next = Object.fromEntries(Object.entries(buffer || {}).filter(([, value]) => Number(value?.time || 0) >= threshold));
@@ -761,15 +806,17 @@ async function notifyJustBeforeStart(env) {
   const isScheduledWindow = (minute >= 29 && minute <= 30) || minute >= 59 || minute === 0;
   try {
     const settings = await notificationSettings(env); if (!settings.notifications_enabled || !settings.notify_imminent) return;
-    const master = await masters(env); const favoriteIds = Object.keys(master.favorites);
+    const master = await masters(env); const favoriteIds = Object.keys(master.favorites); const globalIds = new Set(Object.keys(master.global));
     const [history, favoriteRaw, specialRaw] = await Promise.all([
       getState(env, 'imminent_notification_history', {}),
       favoriteIds.length ? holodex(env, '/users/live', { channels: favoriteIds.join(',') }) : [],
-      holodex(env, '/live', { org: 'Hololive', max_upcoming_hours: '336' })
+      holodex(env, '/live', { org: 'Hololive', include: 'mentions,description', max_upcoming_hours: '336' })
     ]);
     const cleanedHistory = Object.fromEntries(Object.entries(history).filter(([, value]) => Number(value?.time || 0) > now - 24 * 3600_000));
-    const specials = specialRaw.filter((raw) => !master.excludes.includes(raw.channel?.id) && isSpecial(raw.title, master.eventKeywords)).map((raw) => ({ ...video(raw), isSpecial: true }));
-    const candidates = merge([...favoriteRaw.map((raw) => video(raw)), ...specials]).sort((left, right) => new Date(left.startTimeRaw) - new Date(right.startTimeRaw));
+    const specialCandidates = specialRaw.filter((raw) => isSpecial(raw.title, master.eventKeywords));
+    const allowedExternalIds = await allowedExternalChannelIds(env, specialCandidates, globalIds);
+    const specials = specialCandidates.filter((raw) => globalIds.has(raw.channel?.id) || allowedExternalIds.has(raw.channel?.id)).map((raw) => ({ ...enrichGuestSignals(video(raw, globalIds, master.talentMap), master), isSpecial: true })).filter((item) => globalIds.has(item.channelId) || item.guests.length);
+    const candidates = merge([...favoriteRaw.map((raw) => enrichGuestSignals(video(raw, globalIds, master.talentMap), master)), ...specials]).sort((left, right) => new Date(left.startTimeRaw) - new Date(right.startTimeRaw));
     const early = []; const scheduled = [];
     candidates.forEach((item) => {
       const reason = imminentReason(item, master); if (!reason || cleanedHistory[item.videoId]?.notified_imminent) return;
@@ -810,9 +857,11 @@ async function monitor(env) {
   const master = await masters(env); const ids = Object.keys(master.global); const globalIds = new Set(ids);
   const relationalStore = await operationalReady(env);
   const chunks = Array.from({ length: Math.ceil(ids.length / 50) }, (_, index) => ids.slice(index * 50, index * 50 + 50));
-  const own = await Promise.all(chunks.map((chunk) => holodex(env, '/live', { channels: chunk.join(','), include: 'mentions', max_upcoming_hours: '336' })));
-  const external = await holodex(env, '/live', { org: 'Hololive', include: 'mentions', limit: '50', max_upcoming_hours: '336' });
-  const holodexVideos = [...own.flat(), ...external].map((raw) => video(raw, globalIds, master.talentMap)).filter((item) => (globalIds.has(item.channelId) || item.guests.length) && shouldInclude(item, master));
+  const own = await Promise.all(chunks.map((chunk) => holodex(env, '/live', { channels: chunk.join(','), include: 'mentions,description', max_upcoming_hours: '336' })));
+  const external = await holodex(env, '/live', { org: 'Hololive', include: 'mentions,description', limit: '50', max_upcoming_hours: '336' });
+  const allowedExternalIds = await allowedExternalChannelIds(env, external, globalIds);
+  const permittedExternal = external.filter((raw) => globalIds.has(raw.channel?.id) || allowedExternalIds.has(raw.channel?.id));
+  const holodexVideos = [...own.flat(), ...permittedExternal].map((raw) => enrichGuestSignals(video(raw, globalIds, master.talentMap), master)).filter((item) => (globalIds.has(item.channelId) || item.guests.length) && shouldInclude(item, master));
   const [dbAllLive, dbAllUpcoming, dbAllEnded, dbUiLive, dbUiUpcoming, dbUiEnded, dbNotificationHistory, legacyAllLive, legacyAllUpcoming, legacyAllEnded, legacyUiLive, legacyUiUpcoming, legacyUiEnded, legacyNotificationHistory, viewerBuffer, monitorError] = await Promise.all([
     readVideoState(env, 'all', 'live'), readVideoState(env, 'all', 'upcoming'), readVideoState(env, 'all', 'ended'), readVideoState(env, 'ui', 'live'), readVideoState(env, 'ui', 'upcoming'), readVideoState(env, 'ui', 'ended'), readNotificationHistory(env),
     getState(env, 'all_live', []), getState(env, 'all_upcoming', []), getState(env, 'all_ended', []), getState(env, 'ui_live', []), getState(env, 'ui_upcoming', []), getState(env, 'ui_ended', []), getState(env, 'notification_history', {}), getState(env, 'viewer_buffer', {}), getState(env, 'monitor_error', null)
@@ -842,10 +891,13 @@ async function monitor(env) {
     nextRssCursor = rssBatch.nextCursor;
     scannedYoutube = true;
   }
-  const all = merge([...holodexVideos, ...youtubeVideos, ...guestRefresh.videos]).filter((item) => shouldInclude(item, master));
+  const all = merge([...holodexVideos, ...youtubeVideos, ...guestRefresh.videos]).map((item) => enrichGuestSignals(item, master)).filter((item) => shouldInclude(item, master));
   const favRaw = Object.keys(master.favorites).length ? await holodex(env, '/users/live', { channels: Object.keys(master.favorites).join(',') }) : [];
-  const specialRaw = await holodex(env, '/live', { org: 'Hololive', max_upcoming_hours: '336' });
-  const favorites = merge([...favRaw.map((raw) => video(raw)), ...specialRaw.filter((raw) => !master.excludes.includes(raw.channel?.id) && isSpecial(raw.title, master.eventKeywords)).map((raw) => ({ ...video(raw), isSpecial: true })), ...all.filter((item) => primaryTarget(item, master))]);
+  const specialRaw = await holodex(env, '/live', { org: 'Hololive', include: 'mentions,description', max_upcoming_hours: '336' });
+  const specialCandidates = specialRaw.filter((raw) => isSpecial(raw.title, master.eventKeywords));
+  const allowedSpecialExternalIds = await allowedExternalChannelIds(env, specialCandidates, globalIds);
+  const specials = specialCandidates.filter((raw) => globalIds.has(raw.channel?.id) || allowedSpecialExternalIds.has(raw.channel?.id)).map((raw) => ({ ...enrichGuestSignals(video(raw, globalIds, master.talentMap), master), isSpecial: true })).filter((item) => globalIds.has(item.channelId) || item.guests.length);
+  const favorites = merge([...favRaw.map((raw) => enrichGuestSignals(video(raw, globalIds, master.talentMap), master)), ...specials, ...all.filter((item) => primaryTarget(item, master))]);
   const keep = now - 90 * 86400000;
   const favoriteIds = new Set(Object.keys(master.favorites));
   const classify = (item) => {
