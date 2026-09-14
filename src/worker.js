@@ -217,13 +217,9 @@ async function importSheetMasters(env) {
   const eventKeywords = Object.fromEntries((events[0] || []).map((title, column) => [title, events.slice(1).map((row) => row[column]).filter(Boolean)]).filter(([title]) => title));
   return { favorites: favoriteMap, excludes: excludes.slice(1).map((row) => row[1]).filter(Boolean), excludeWords: words.map((row) => String(row[0] || '').toLowerCase()).filter(Boolean), eventKeywords, talentMap: Object.fromEntries(talent.slice(1).filter((row) => row[0] && row[1])), global: Object.fromEntries(global.slice(1).filter((row) => String(row[1] || '').startsWith('UC')).map((row) => [String(row[1]), { name: row[0] }])) };
 }
-function normalizeYoutubeHandle(value) {
-  const match = String(value || '').trim().match(/(?:youtube\.com\/)?@([a-z0-9._-]{3,})/i);
-  return match ? match[1].toLowerCase() : '';
-}
 function masterFromRows(channels, words = [], events = [], aliases = []) {
   const values = channels instanceof Map ? [...channels.entries()].map(([channel_id, item]) => ({ channel_id, name: item.name, is_global: item.isGlobal, is_favorite: item.isFavorite, is_excluded: item.isExcluded })) : channels;
-  const member = (item) => ({ name: item.name || '', priority: Number(item.priority || 0), handle: normalizeYoutubeHandle(item.youtube_handle || item.youtube_url), handleCheckedAt: Number(item.handle_checked_at || 0) });
+  const member = (item) => ({ name: item.name || '', priority: Number(item.priority || 0), icon: String(item.channel_icon || '') });
   const favorites = Object.fromEntries(values.filter((item) => Number(item.is_favorite)).map((item) => [item.channel_id, member(item)]));
   const global = Object.fromEntries(values.filter((item) => Number(item.is_global)).map((item) => [item.channel_id, member(item)]));
   const eventKeywords = {};
@@ -235,16 +231,16 @@ async function masters(env) {
     const existing = await queryAll(env, 'SELECT channel_id, name, is_global, is_favorite, is_excluded, priority FROM channels');
     if (!existing.length) await importSheetMasters(env);
     await bootstrapOperationalState(env);
-    const [channels, keywords, words, aliases] = await Promise.all([queryAll(env, 'SELECT c.channel_id, c.name, c.is_global, c.is_favorite, c.is_excluded, c.priority, c.youtube_url, h.handle AS youtube_handle, h.updated_at AS handle_checked_at FROM channels c LEFT JOIN channel_handles h ON h.channel_id=c.channel_id ORDER BY c.is_favorite DESC, c.priority DESC, c.name'), queryAll(env, 'SELECT category, keyword FROM event_keywords'), queryAll(env, 'SELECT keyword FROM exclude_words'), queryAll(env, 'SELECT source_name, display_name FROM talent_aliases')]);
+    const [channels, keywords, words, aliases] = await Promise.all([queryAll(env, 'SELECT c.channel_id, c.name, c.is_global, c.is_favorite, c.is_excluded, c.priority, i.icon_url AS channel_icon FROM channels c LEFT JOIN channel_icons i ON i.channel_id=c.channel_id ORDER BY c.is_favorite DESC, c.priority DESC, c.name'), queryAll(env, 'SELECT category, keyword FROM event_keywords'), queryAll(env, 'SELECT keyword FROM exclude_words'), queryAll(env, 'SELECT source_name, display_name FROM talent_aliases')]);
     return masterFromRows(channels, words, keywords, aliases);
   }
   // Allows a safe deploy before the D1 migration has been applied.
   return importSheetMasters(env);
 }
-async function hydrateYoutubeHandles(env, master) {
+async function hydrateChannelIcons(env, master) {
   if (!env.YOUTUBE_API_KEY || !await operationalReady(env)) return;
   const now = Date.now();
-  const missing = Object.keys(master.global).filter((channelId) => !master.global[channelId]?.handle && now - Number(master.global[channelId]?.handleCheckedAt || 0) > 7 * 86400000);
+  const missing = Object.keys(master.global).filter((channelId) => !master.global[channelId]?.icon);
   if (!missing.length) return;
   const chunks = Array.from({ length: Math.ceil(missing.length / 50) }, (_, index) => missing.slice(index * 50, index * 50 + 50));
   const resolved = new Map();
@@ -252,20 +248,19 @@ async function hydrateYoutubeHandles(env, master) {
     try {
       const query = new URLSearchParams({ part: 'snippet', id: chunk.join(','), key: env.YOUTUBE_API_KEY });
       const response = await fetch(`https://www.googleapis.com/youtube/v3/channels?${query}`);
-      if (!response.ok) throw new Error(`YouTube channel lookup failed: ${response.status}`);
+      if (!response.ok) throw new Error(`YouTube channel icon lookup failed: ${response.status}`);
       for (const channel of (await response.json()).items || []) {
-        const handle = normalizeYoutubeHandle(channel.snippet?.customUrl);
-        if (handle) resolved.set(channel.id, handle);
+        const icon = channel.snippet?.thumbnails?.default?.url || channel.snippet?.thumbnails?.medium?.url || '';
+        if (icon) resolved.set(channel.id, icon);
       }
-    } catch (error) { console.warn('YouTube handle lookup failed.', error.message || error); }
+    } catch (error) { console.warn('YouTube channel icon lookup failed.', error.message || error); }
   }));
-  await env.DB.batch(missing.map((channelId) => env.DB.prepare('INSERT INTO channel_handles (channel_id, handle, updated_at) VALUES (?, ?, ?) ON CONFLICT(channel_id) DO UPDATE SET handle=excluded.handle, updated_at=excluded.updated_at').bind(channelId, resolved.get(channelId) || '', now)));
+  if (!resolved.size) return;
+  await env.DB.batch([...resolved.entries()].map(([channelId, icon]) => env.DB.prepare('INSERT INTO channel_icons (channel_id, icon_url, updated_at) VALUES (?, ?, ?) ON CONFLICT(channel_id) DO UPDATE SET icon_url=excluded.icon_url, updated_at=excluded.updated_at').bind(channelId, icon, now)));
   missing.forEach((channelId) => {
-    const handle = resolved.get(channelId) || '';
-    if (master.global[channelId]) master.global[channelId].handle = handle;
-    if (master.favorites[channelId]) master.favorites[channelId].handle = handle;
-    if (master.global[channelId]) master.global[channelId].handleCheckedAt = now;
-    if (master.favorites[channelId]) master.favorites[channelId].handleCheckedAt = now;
+    const icon = resolved.get(channelId) || '';
+    if (master.global[channelId]) master.global[channelId].icon = icon;
+    if (master.favorites[channelId]) master.favorites[channelId].icon = icon;
   });
 }
 async function updateFavorite(env, channelId, isFavorite) {
@@ -362,37 +357,28 @@ async function refreshTrackedGuests(env, states, globalIds, talentMap, cursors) 
   });
   return { videos, cursors: { live: live.nextCursor, upcoming: upcoming.nextCursor, ended: ended.nextCursor } };
 }
-function primaryTarget(item, master) { const ids = new Set(Object.keys(master.favorites)); return Boolean(ids.has(item.channelId) || item.isSpecial || isSpecial(item.title, master.eventKeywords) || (item.mentions || []).some((mention) => ids.has(mention.id)) || (item.detectedMemberIds || []).some((id) => ids.has(id))); }
+function primaryTarget(item, master) { const ids = new Set(Object.keys(master.favorites)); return Boolean(ids.has(item.channelId) || item.isSpecial || isSpecial(item.title, master.eventKeywords) || (item.mentions || []).some((mention) => ids.has(mention.id))); }
 function target(item, master) { if (primaryTarget(item, master)) return true; return Object.values(master.favorites).some((favorite) => favorite.name && item.title?.includes(favorite.name)); }
 function shouldInclude(item, master) { if (Object.hasOwn(master.favorites, item.channelId)) return true; const title = normalizeTitle(item.title); if ((master.excludeWords || []).some((word) => title.includes(normalizeTitle(word)))) return false; return !(master.excludes || []).includes(item.channelId); }
 function isWithin72Hours(value, now) { const diff = new Date(value).getTime() - now; return diff >= -3 * 3600_000 && diff <= 72 * 3600_000; }
 function normalizeTitle(value) { return String(value || '').normalize('NFKC').replace(/\s+/g, ' ').trim().toLowerCase(); }
-function descriptionHandles(value) {
-  const handles = new Set();
-  for (const match of String(value || '').matchAll(/(^|[^a-z0-9._-])@([a-z0-9._-]{3,})/gi)) handles.add(match[2].toLowerCase());
-  return handles;
-}
 function enrichGuestSignals(item, master) {
   const roster = master.global || {};
-  // Title/description inference only decides whether an outside stream matters.
-  // It must never become a displayed guest: event titles and credits often list
-  // many members who are not actually participating in the stream.
+  // Holodex mentions are preferred. Titles are the only supplemental source:
+  // descriptions frequently contain credits and must not create guest entries.
   const mentions = new Map((item.mentions || []).filter((mention) => mention?.id && !mention.inferred_from).map((mention) => [mention.id, mention]));
   const normalizedTitle = normalizeTitle(item.title);
-  const handles = descriptionHandles(item.description);
-  const detectedMemberIds = new Set(item.detectedMemberIds || []);
   Object.entries(roster).forEach(([channelId, channel]) => {
     if (channelId === item.channelId || mentions.has(channelId)) return;
     const name = String(channel?.name || '').trim();
     const mentionedByTitle = name.length >= 3 && normalizedTitle.includes(normalizeTitle(name));
-    const mentionedByDescriptionHandle = Boolean(channel?.handle && handles.has(channel.handle));
-    if (mentionedByTitle || mentionedByDescriptionHandle) detectedMemberIds.add(channelId);
+    if (mentionedByTitle) mentions.set(channelId, { id: channelId, name, photo: channel.icon || '', inferred_from: 'title' });
   });
   const allMentions = [...mentions.values()];
-  const guests = allMentions.filter((mention) => mention.id !== item.channelId && roster[mention.id]).map((mention) => ({ name: String(roster[mention.id]?.name || normalizedTalentName(mention.name, master.talentMap)).trim(), icon: mention.photo || '' })).filter((guest, index, list) => guest.name && list.findIndex((entry) => entry.name === guest.name) === index);
-  return { ...item, mentions: allMentions, guests, detectedMemberIds: [...detectedMemberIds], mentionsKnown: Boolean(item.mentionsKnown) };
+  const guests = allMentions.filter((mention) => mention.id !== item.channelId && roster[mention.id]).map((mention) => ({ name: String(roster[mention.id]?.name || normalizedTalentName(mention.name, master.talentMap)).trim(), icon: mention.photo || roster[mention.id]?.icon || '' })).filter((guest, index, list) => guest.name && list.findIndex((entry) => entry.name === guest.name) === index);
+  return { ...item, mentions: allMentions, guests, detectedMemberIds: [], mentionsKnown: Boolean(item.mentionsKnown) };
 }
-function hasRosterConnection(item, globalIds) { return globalIds.has(item.channelId) || (item.guests || []).length > 0 || (item.detectedMemberIds || []).length > 0; }
+function hasRosterConnection(item, globalIds) { return globalIds.has(item.channelId) || (item.guests || []).length > 0; }
 function isHolostarsChannel(channel) { return /holostars|ホロスターズ/i.test(`${channel?.org || ''} ${channel?.group || ''}`); }
 async function allowedExternalChannelIds(env, rawVideos, globalIds) {
   const externalIds = [...new Set(rawVideos.map((raw) => raw.channel?.id).filter((id) => id && !globalIds.has(id)))];
@@ -553,7 +539,7 @@ const mentionDisplayName = (mention, master) => String(
 
 function notificationTarget(item, master) {
   const favoriteIds = new Set(Object.keys(master.favorites));
-  return Boolean(item.isSpecial || favoriteIds.has(item.channelId) || (item.mentions || []).some((mention) => favoriteIds.has(mention.id)) || (item.detectedMemberIds || []).some((id) => favoriteIds.has(id)));
+  return Boolean(item.isSpecial || favoriteIds.has(item.channelId) || (item.mentions || []).some((mention) => favoriteIds.has(mention.id)));
 }
 
 function shouldSendChanged(item, now) {
@@ -832,8 +818,6 @@ function imminentReason(item, master) {
   if (item.isSpecial || isSpecial(item.title, master.eventKeywords)) reasons.push('◆記念配信');
   const guests = (item.mentions || []).filter((mention) => favoriteIds.has(mention.id) && mention.id !== item.channelId);
   guests.forEach((guest) => reasons.push(`●ゲスト(連携:${mentionDisplayName(guest, master)})`));
-  const inferredGuests = (item.detectedMemberIds || []).filter((id) => favoriteIds.has(id) && id !== item.channelId);
-  inferredGuests.forEach((id) => reasons.push(`●関連メンバー(タイトル・概要欄:${master.favorites[id]?.name || master.global[id]?.name || id})`));
   const ownerName = master.favorites[item.channelId]?.name || '';
   const namedGuest = Object.values(master.favorites).map(({ name }) => name).find((name) => name && name !== ownerName && item.title.includes(name));
   if (namedGuest && !guests.some((guest) => guest.name === namedGuest)) reasons.push(`●ゲスト(タイトル:${namedGuest})`);
@@ -846,7 +830,7 @@ async function notifyJustBeforeStart(env) {
   const isScheduledWindow = (minute >= 29 && minute <= 30) || minute >= 59 || minute === 0;
   try {
     const settings = await notificationSettings(env); if (!settings.notifications_enabled || !settings.notify_imminent) return;
-    const master = await masters(env); await hydrateYoutubeHandles(env, master); const favoriteIds = Object.keys(master.favorites); const globalIds = new Set(Object.keys(master.global));
+    const master = await masters(env); await hydrateChannelIcons(env, master); const favoriteIds = Object.keys(master.favorites); const globalIds = new Set(Object.keys(master.global));
     const [history, favoriteRaw, specialRaw] = await Promise.all([
       getState(env, 'imminent_notification_history', {}),
       favoriteIds.length ? holodex(env, '/users/live', { channels: favoriteIds.join(',') }) : [],
@@ -894,7 +878,7 @@ async function monitor(env) {
   }
   const lastRun = runtime.lastRun || 0;
   if (now - Number(lastRun || 0) < monitorInterval(new Date(now))) return { ran: false, discovered: 0 };
-  const master = await masters(env); await hydrateYoutubeHandles(env, master); const ids = Object.keys(master.global); const globalIds = new Set(ids);
+  const master = await masters(env); await hydrateChannelIcons(env, master); const ids = Object.keys(master.global); const globalIds = new Set(ids);
   const relationalStore = await operationalReady(env);
   const chunks = Array.from({ length: Math.ceil(ids.length / 50) }, (_, index) => ids.slice(index * 50, index * 50 + 50));
   const own = await Promise.all(chunks.map((chunk) => holodex(env, '/live', { channels: chunk.join(','), include: 'mentions,description', max_upcoming_hours: '336' })));
