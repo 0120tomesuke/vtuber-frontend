@@ -40,12 +40,21 @@ async function setState(env, key, value) {
 async function setStates(env, values) {
   await env.DB.batch(Object.entries(values).map(([key, value]) => env.DB.prepare('INSERT INTO app_state (state_key, state_value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON CONFLICT(state_key) DO UPDATE SET state_value = excluded.state_value, updated_at = CURRENT_TIMESTAMP').bind(key, JSON.stringify(value))));
 }
+async function setStatesIfChanged(env, values, current = {}) {
+  const changed = Object.entries(values).filter(([key, value]) => JSON.stringify(value) !== JSON.stringify(current[key]));
+  if (!changed.length) return;
+  await env.DB.batch(changed.map(([key, value]) => env.DB.prepare('INSERT INTO app_state (state_key, state_value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON CONFLICT(state_key) DO UPDATE SET state_value = excluded.state_value, updated_at = CURRENT_TIMESTAMP').bind(key, JSON.stringify(value))));
+}
 
 // D1 is the source of truth for operational data. app_state is intentionally
 // retained only for small cursors and compatibility during this migration.
 async function queryAll(env, sql, ...bindings) { return (await env.DB.prepare(sql).bind(...bindings).all()).results || []; }
+const operationalReadyCache = new WeakMap();
 async function operationalReady(env) {
-  try { await env.DB.prepare('SELECT 1 FROM channels LIMIT 1').first(); return true; } catch { return false; }
+  // A single invocation used to issue this probe more than ten times. The
+  // schema cannot change during an invocation, so one probe is enough.
+  if (!operationalReadyCache.has(env)) operationalReadyCache.set(env, env.DB.prepare('SELECT 1 FROM channels LIMIT 1').first().then(() => true).catch(() => false));
+  return operationalReadyCache.get(env);
 }
 function statusOf(item) { return item.isEnded ? 'ended' : item.isLive ? 'live' : 'upcoming'; }
 async function readVideoState(env, scope, status) {
@@ -53,37 +62,63 @@ async function readVideoState(env, scope, status) {
   const rows = await queryAll(env, `SELECT v.data_json FROM video_states s JOIN videos v ON v.video_id = s.video_id WHERE s.scope = ? AND s.status = ? ORDER BY COALESCE(v.start_time, '') ${status === 'ended' ? 'DESC' : 'ASC'}`, scope, status);
   return rows.flatMap((row) => { try { return [JSON.parse(row.data_json)]; } catch { return []; } });
 }
-function upsertVideo(env, item, now) {
+function durableVideo(item) {
+  // These fields are used only while deciding whether to notify. Keeping them
+  // in the canonical record makes the same video look changed in the all/ui
+  // scopes and causes an unnecessary second write.
+  const { previous, notificationKind, changedFields, passReason, ...video } = item;
+  return video;
+}
+function upsertVideo(env, item, now, dataJson = JSON.stringify(durableVideo(item))) {
   const status = statusOf(item);
   const peak = Number(item.viewers || String(item.liveViewersFormatted || '').replaceAll(',', '') || 0);
   return env.DB.prepare(`INSERT INTO videos (video_id, title, channel_id, channel_title, video_url, thumbnail, start_time, status, is_special, peak_viewers, duration_seconds, data_json, first_seen_at, last_seen_at, ended_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
     ON CONFLICT(video_id) DO UPDATE SET title=excluded.title, channel_id=excluded.channel_id, channel_title=excluded.channel_title, video_url=excluded.video_url, thumbnail=excluded.thumbnail, start_time=excluded.start_time, status=excluded.status, is_special=excluded.is_special, peak_viewers=MAX(videos.peak_viewers, excluded.peak_viewers), data_json=excluded.data_json, last_seen_at=excluded.last_seen_at, ended_at=COALESCE(videos.ended_at, excluded.ended_at)`)
-    .bind(item.videoId, item.title || '', item.channelId || '', item.channelTitle || '', item.videoUrl || '', item.thumbnail || '', item.startTimeRaw || null, status, item.isSpecial ? 1 : 0, peak, JSON.stringify(item), now, now, status === 'ended' ? now : null);
+    .bind(item.videoId, item.title || '', item.channelId || '', item.channelTitle || '', item.videoUrl || '', item.thumbnail || '', item.startTimeRaw || null, status, item.isSpecial ? 1 : 0, peak, dataJson, now, now, status === 'ended' ? now : null);
 }
-async function persistVideoState(env, scope, state, items, now) {
-  if (!await operationalReady(env)) return;
+async function storedVideos(env, ids) {
+  const rows = [];
+  for (let offset = 0; offset < ids.length; offset += 80) {
+    const chunk = ids.slice(offset, offset + 80);
+    if (!chunk.length) continue;
+    rows.push(...await queryAll(env, `SELECT video_id, data_json FROM videos WHERE video_id IN (${chunk.map(() => '?').join(',')})`, ...chunk));
+  }
+  return new Map(rows.map((row) => [row.video_id, row.data_json]));
+}
+async function runStatements(env, statements) {
+  // Keep individual D1 batches reasonably small even during the one-time
+  // migration from the old full-rewrite layout.
+  for (let offset = 0; offset < statements.length; offset += 80) await env.DB.batch(statements.slice(offset, offset + 80));
+}
+async function persistVideoScope(env, scope, groups, now) {
+  const desired = new Map();
+  Object.entries(groups).forEach(([status, items]) => (items || []).forEach((item) => { if (item?.videoId) desired.set(item.videoId, { item, status, dataJson: JSON.stringify(durableVideo(item)) }); }));
+  const existingStates = new Map((await queryAll(env, 'SELECT video_id, status FROM video_states WHERE scope=?', scope)).map((row) => [row.video_id, row.status]));
+  const existingVideos = await storedVideos(env, [...desired.keys()]);
   const statements = [];
-  // Replace only the status being refreshed.  Deleting both here caused the
-  // subsequent upcoming write to erase the just-written live rows.
-  if (state !== 'ended') statements.push(env.DB.prepare('DELETE FROM video_states WHERE scope = ? AND status = ?').bind(scope, state));
-  items.forEach((item) => {
-    if (!item?.videoId) return;
-    statements.push(upsertVideo(env, item, now));
-    statements.push(env.DB.prepare('INSERT INTO video_states (scope, video_id, status, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(scope, video_id) DO UPDATE SET status=excluded.status, updated_at=excluded.updated_at').bind(scope, item.videoId, state, now));
+  desired.forEach(({ item, status, dataJson }, videoId) => {
+    // Live viewer count remains current: a live record is written only when
+    // its actual payload changes, rather than once per scope every minute.
+    if (existingVideos.get(videoId) !== dataJson) statements.push(upsertVideo(env, item, now, dataJson));
+    if (existingStates.get(videoId) !== status) statements.push(env.DB.prepare('INSERT INTO video_states (scope, video_id, status, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(scope, video_id) DO UPDATE SET status=excluded.status, updated_at=excluded.updated_at').bind(scope, videoId, status, now));
   });
-  if (state === 'ended') statements.push(env.DB.prepare("DELETE FROM video_states WHERE scope = ? AND status = 'ended' AND video_id IN (SELECT video_id FROM videos WHERE ended_at IS NOT NULL AND ended_at < ?)").bind(scope, now - 90 * 86400_000));
-  if (statements.length) await env.DB.batch(statements);
+  existingStates.forEach((_, videoId) => { if (!desired.has(videoId)) statements.push(env.DB.prepare('DELETE FROM video_states WHERE scope=? AND video_id=?').bind(scope, videoId)); });
+  await runStatements(env, statements);
 }
 async function persistVideoStates(env, states, now) {
-  for (const [scope, state, items] of [['all', 'live', states.allLive], ['all', 'upcoming', states.allUpcoming], ['all', 'ended', states.allEnded], ['ui', 'live', states.uiLive], ['ui', 'upcoming', states.uiUpcoming], ['ui', 'ended', states.uiEnded]]) await persistVideoState(env, scope, state, items, now);
+  if (!await operationalReady(env)) return;
+  await persistVideoScope(env, 'all', { live: states.allLive, upcoming: states.allUpcoming, ended: states.allEnded }, now);
+  await persistVideoScope(env, 'ui', { live: states.uiLive, upcoming: states.uiUpcoming, ended: states.uiEnded }, now);
 }
 async function recordViewerSamples(env, liveVideos, now) {
   if (!await operationalReady(env) || !liveVideos.length) return;
-  // Five-minute buckets keep 90 days of charts practical on D1 Free while
-  // retaining the maximum viewer count observed in every bucket.
+  // Five-minute buckets keep 90 days of charts practical on D1 Free. The
+  // all-minute peak remains in videos.peak_viewers.
   const observedAt = Math.floor(now / (5 * 60_000)) * 5 * 60_000;
-  await env.DB.batch(liveVideos.filter((item) => item?.videoId).map((item) => env.DB.prepare('INSERT INTO viewer_samples (video_id, observed_at, viewers, source) VALUES (?, ?, ?, ?) ON CONFLICT(video_id, observed_at) DO UPDATE SET viewers=MAX(viewer_samples.viewers, excluded.viewers), source=excluded.source').bind(item.videoId, observedAt, Number(item.viewers || 0), item.source || 'holodex')));
+  // A bucket is an historical sample, not a per-minute counter. INSERT OR
+  // IGNORE prevents five UPDATEs in the same bucket for every live stream.
+  await env.DB.batch(liveVideos.filter((item) => item?.videoId).map((item) => env.DB.prepare('INSERT OR IGNORE INTO viewer_samples (video_id, observed_at, viewers, source) VALUES (?, ?, ?, ?)').bind(item.videoId, observedAt, Number(item.viewers || 0), item.source || 'holodex')));
 }
 async function readNotificationHistory(env) {
   if (!await operationalReady(env)) return null;
@@ -92,9 +127,15 @@ async function readNotificationHistory(env) {
 }
 async function persistNotificationHistory(env, history, now = Date.now()) {
   if (!await operationalReady(env)) return;
-  const statements = [env.DB.prepare('DELETE FROM notification_state')];
-  Object.entries(history).forEach(([videoId, state]) => statements.push(env.DB.prepare('INSERT INTO notification_state (video_id, state_json, updated_at) VALUES (?, ?, ?)').bind(videoId, JSON.stringify(state), now)));
-  await env.DB.batch(statements);
+  const existing = new Map((await queryAll(env, 'SELECT video_id, state_json FROM notification_state')).map((row) => [row.video_id, row.state_json]));
+  const statements = [];
+  Object.entries(history).forEach(([videoId, state]) => {
+    const value = JSON.stringify(state);
+    if (existing.get(videoId) !== value) statements.push(env.DB.prepare('INSERT INTO notification_state (video_id, state_json, updated_at) VALUES (?, ?, ?) ON CONFLICT(video_id) DO UPDATE SET state_json=excluded.state_json, updated_at=excluded.updated_at').bind(videoId, value, now));
+    existing.delete(videoId);
+  });
+  existing.forEach((_, videoId) => statements.push(env.DB.prepare('DELETE FROM notification_state WHERE video_id=?').bind(videoId)));
+  await runStatements(env, statements);
 }
 async function logNotification(env, type, subject, items, status, detail = {}) {
   if (!await operationalReady(env)) return;
@@ -121,6 +162,10 @@ async function startMonitorRun(env, type, batchStart = null) {
 }
 async function finishMonitorRun(env, id, status, discovered = 0, message = '') {
   if (id) await env.DB.prepare('UPDATE monitor_runs SET finished_at=?, status=?, discovered_count=?, message=? WHERE id=?').bind(Date.now(), status, discovered, String(message || '').slice(0, 1000), id).run();
+}
+async function recordFailedMonitorRun(env, batchStart, message) {
+  const now = Date.now();
+  await env.DB.prepare("INSERT INTO monitor_runs (started_at, finished_at, run_type, rss_batch_start, status, discovered_count, message) VALUES (?, ?, 'monitor', ?, 'failed', 0, ?)").bind(now, now, batchStart, String(message || '').slice(0, 1000)).run();
 }
 
 function pemBytes(pem) {
@@ -698,7 +743,16 @@ async function notifyJustBeforeStart(env) {
 }
 async function monitor(env) {
   const now = Date.now();
-  const lastRun = await getState(env, 'last_monitor_run', 0);
+  // Consolidating hot cursors into one state row saves several writes every
+  // minute. The legacy keys are read only once after deploying this change.
+  let runtime = await getState(env, 'monitor_runtime', null);
+  if (!runtime) {
+    const [lastRun, processedRssIds, lastYoutubeScan, rssCursor, guestRefreshCursors] = await Promise.all([
+      getState(env, 'last_monitor_run', 0), getState(env, 'processed_rss_ids', []), getState(env, 'last_youtube_scan', 0), getState(env, 'rss_channel_cursor', 0), getState(env, 'holodex_guest_refresh_cursor', { live: 0, upcoming: 0, ended: 0 })
+    ]);
+    runtime = { lastRun, processedRssIds, lastYoutubeScan, rssCursor, guestRefreshCursors };
+  }
+  const lastRun = runtime.lastRun || 0;
   if (now - Number(lastRun || 0) < monitorInterval(new Date(now))) return { ran: false, discovered: 0 };
   const master = await masters(env); const ids = Object.keys(master.global); const globalIds = new Set(ids);
   const relationalStore = await operationalReady(env);
@@ -706,12 +760,16 @@ async function monitor(env) {
   const own = await Promise.all(chunks.map((chunk) => holodex(env, '/live', { channels: chunk.join(','), include: 'mentions', max_upcoming_hours: '336' })));
   const external = await holodex(env, '/live', { org: 'Hololive', include: 'mentions', limit: '50', max_upcoming_hours: '336' });
   const holodexVideos = [...own.flat(), ...external].map((raw) => video(raw, globalIds, master.talentMap)).filter((item) => (globalIds.has(item.channelId) || item.guests.length) && shouldInclude(item, master));
-  const [dbAllLive, dbAllUpcoming, dbAllEnded, dbUiLive, dbUiUpcoming, dbUiEnded, dbNotificationHistory, legacyAllLive, legacyAllUpcoming, legacyAllEnded, legacyUiLive, legacyUiUpcoming, legacyUiEnded, legacyNotificationHistory, processedRssIds, lastYoutubeScan, rssCursor, viewerBuffer, guestRefreshCursors] = await Promise.all([
-    readVideoState(env, 'all', 'live'), readVideoState(env, 'all', 'upcoming'), relationalStore ? Promise.resolve([]) : Promise.resolve(null), readVideoState(env, 'ui', 'live'), readVideoState(env, 'ui', 'upcoming'), relationalStore ? Promise.resolve([]) : Promise.resolve(null), readNotificationHistory(env),
-    getState(env, 'all_live', []), getState(env, 'all_upcoming', []), getState(env, 'all_ended', []), getState(env, 'ui_live', []), getState(env, 'ui_upcoming', []), getState(env, 'ui_ended', []), getState(env, 'notification_history', {}), getState(env, 'processed_rss_ids', []), getState(env, 'last_youtube_scan', 0), getState(env, 'rss_channel_cursor', 0), getState(env, 'viewer_buffer', {}), getState(env, 'holodex_guest_refresh_cursor', { live: 0, upcoming: 0, ended: 0 })
+  const [dbAllLive, dbAllUpcoming, dbAllEnded, dbUiLive, dbUiUpcoming, dbUiEnded, dbNotificationHistory, legacyAllLive, legacyAllUpcoming, legacyAllEnded, legacyUiLive, legacyUiUpcoming, legacyUiEnded, legacyNotificationHistory, viewerBuffer, monitorError] = await Promise.all([
+    readVideoState(env, 'all', 'live'), readVideoState(env, 'all', 'upcoming'), readVideoState(env, 'all', 'ended'), readVideoState(env, 'ui', 'live'), readVideoState(env, 'ui', 'upcoming'), readVideoState(env, 'ui', 'ended'), readNotificationHistory(env),
+    getState(env, 'all_live', []), getState(env, 'all_upcoming', []), getState(env, 'all_ended', []), getState(env, 'ui_live', []), getState(env, 'ui_upcoming', []), getState(env, 'ui_ended', []), getState(env, 'notification_history', {}), getState(env, 'viewer_buffer', {}), getState(env, 'monitor_error', null)
   ]);
-  const previousAllLive = dbAllLive ?? legacyAllLive; const previousAllUpcoming = dbAllUpcoming ?? legacyAllUpcoming; const previousAllEnded = dbAllEnded === null ? legacyAllEnded : [];
-  const previousUiLive = dbUiLive ?? legacyUiLive; const previousUiUpcoming = dbUiUpcoming ?? legacyUiUpcoming; const previousUiEnded = dbUiEnded === null ? legacyUiEnded : [];
+  const processedRssIds = runtime.processedRssIds || [];
+  const lastYoutubeScan = runtime.lastYoutubeScan || 0;
+  const rssCursor = runtime.rssCursor || 0;
+  const guestRefreshCursors = runtime.guestRefreshCursors || { live: 0, upcoming: 0, ended: 0 };
+  const previousAllLive = dbAllLive ?? legacyAllLive; const previousAllUpcoming = dbAllUpcoming ?? legacyAllUpcoming; const previousAllEnded = dbAllEnded ?? legacyAllEnded;
+  const previousUiLive = dbUiLive ?? legacyUiLive; const previousUiUpcoming = dbUiUpcoming ?? legacyUiUpcoming; const previousUiEnded = dbUiEnded ?? legacyUiEnded;
   const notificationHistory = dbNotificationHistory ?? legacyNotificationHistory;
   // Holodex can add mentions while a stream is already running (for example,
   // a surprise guest in a 凸待ち). Refresh tracked videos separately from RSS.
@@ -759,7 +817,8 @@ async function monitor(env) {
   const relational = relationalStore;
   await persistVideoStates(env, { allLive: allState.live, allUpcoming: allState.upcoming, allEnded: allState.ended, uiLive: uiState.live, uiUpcoming: uiState.upcoming, uiEnded: uiState.ended }, now);
   await recordViewerSamples(env, allState.live, now);
-  await setStates(env, { ...(relational ? {} : { all_live: allState.live, all_upcoming: allState.upcoming, all_ended: allState.ended, ui_live: uiState.live, ui_upcoming: uiState.upcoming, ui_ended: uiState.ended, notification_history: notificationHistory, viewer_buffer: updateViewerBuffer(viewerBuffer, allState.live, now) }), processed_rss_ids: nextProcessed, rss_channel_cursor: scannedYoutube ? nextRssCursor : rssCursor, holodex_guest_refresh_cursor: guestRefresh.cursors, last_youtube_scan: scannedYoutube ? now : lastYoutubeScan, last_monitor_run: now, monitor_error: null });
+  const nextRuntime = { lastRun: now, processedRssIds: nextProcessed, rssCursor: scannedYoutube ? nextRssCursor : rssCursor, guestRefreshCursors: guestRefresh.cursors, lastYoutubeScan: scannedYoutube ? now : lastYoutubeScan };
+  await setStatesIfChanged(env, { ...(relational ? {} : { all_live: allState.live, all_upcoming: allState.upcoming, all_ended: allState.ended, ui_live: uiState.live, ui_upcoming: uiState.upcoming, ui_ended: uiState.ended, notification_history: notificationHistory, viewer_buffer: updateViewerBuffer(viewerBuffer, allState.live, now) }), monitor_runtime: nextRuntime, ...(monitorError ? { monitor_error: null } : {}) }, { ...(relational ? {} : { all_live: legacyAllLive, all_upcoming: legacyAllUpcoming, all_ended: legacyAllEnded, ui_live: legacyUiLive, ui_upcoming: legacyUiUpcoming, ui_ended: legacyUiEnded, notification_history: legacyNotificationHistory, viewer_buffer: viewerBuffer }), monitor_runtime: runtime, monitor_error: monitorError });
   try {
     const nextHistory = await notifyChanges(env, classifiedFavorites, notificationHistory, master);
     if (nextHistory !== notificationHistory) relational ? await persistNotificationHistory(env, nextHistory, now) : await setState(env, 'notification_history', nextHistory);
@@ -787,14 +846,22 @@ async function runScheduledMonitor(env) {
     }
   }
   try {
-    await setState(env, 'last_monitor_attempt', { at: attemptedAt });
-    monitorRunId = await startMonitorRun(env, 'monitor', Number(await getState(env, 'rss_channel_cursor', 0)));
+    const runtime = await getState(env, 'monitor_runtime', null);
+    const batchStart = Number(runtime?.rssCursor || await getState(env, 'rss_channel_cursor', 0));
+    // The history screen remains useful without charging two D1 writes for
+    // every healthy minute. Failures are still recorded individually.
+    const lastRecorded = await getState(env, 'last_successful_monitor_log', 0);
+    const monitorDue = now - Number(runtime?.lastRun || 0) >= monitorInterval(new Date(now));
+    const recordSuccess = monitorDue && now - Number(lastRecorded || 0) >= 15 * 60_000;
+    if (recordSuccess) monitorRunId = await startMonitorRun(env, 'monitor', batchStart);
     const result = await monitor(env);
     await finishMonitorRun(env, monitorRunId, result?.ran ? 'success' : 'skipped', result?.discovered || 0);
+    if (monitorRunId && result?.ran) await setState(env, 'last_successful_monitor_log', now);
     await notifyJustBeforeStart(env);
   } catch (error) {
     console.error('Scheduled monitor failed.', error);
-    await finishMonitorRun(env, monitorRunId, 'failed', 0, error.message || 'Scheduled monitor failed');
+    if (monitorRunId) await finishMonitorRun(env, monitorRunId, 'failed', 0, error.message || 'Scheduled monitor failed');
+    else await recordFailedMonitorRun(env, Number((await getState(env, 'monitor_runtime', {}))?.rssCursor || 0), error.message || 'Scheduled monitor failed');
     await setState(env, 'monitor_error', {
       message: error.message || 'Scheduled monitor failed',
       at: attemptedAt
