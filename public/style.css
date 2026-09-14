@@ -1349,4 +1349,38 @@ body.menu-open #side-menu {
 .ended-stat-label { color: #bae6fd; font-weight: 700; }
 .live-viewers.ended-stats strong { color: #fff; font-size: 15px; letter-spacing: .04em; }
 .live-viewers.ended-stats .viewer-chart-btn { border-color: rgba(186, 230, 253, .7); color: #e0f2fe; }
-@media screen and (min-width: 769px) { .live-viewers.ended-stats { order: 3; } }
+@media screen and (min-width: 769px) {
+  /* 終了済みは動画時間（右下）を避け、最大同接を左下に置く。 */
+  .card:has(.label-ended) .live-viewers.ended-stats {
+    position: absolute !important;
+    top: calc(56.25cqw - 30px) !important;
+    right: auto !important;
+    bottom: auto !important;
+    left: 4px !important;
+    z-index: 21;
+    order: unset;
+    gap: 4px;
+    margin: 0 !important;
+    padding: 4px 6px !important;
+    border: 1px solid rgba(56, 189, 248, .58) !important;
+    border-radius: 6px !important;
+    background: linear-gradient(135deg, rgba(15, 23, 42, .82), rgba(30, 41, 59, .88)) !important;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.08), 0 2px 8px rgba(0,0,0,.25) !important;
+    color: #f8fafc !important;
+    font-size: 10px !important;
+    line-height: 1 !important;
+    white-space: nowrap;
+  }
+  .card:has(.label-ended) .live-viewers.ended-stats strong { font-size: 13px; }
+  .card:has(.label-ended) .live-viewers.ended-stats .ended-stat-label { color: #7dd3fc; }
+  .card:has(.label-ended) .live-viewers.ended-stats .viewer-chart-btn {
+    margin-left: 1px;
+    padding: 1px 3px;
+    border: 0;
+    border-left: 1px solid rgba(255,255,255,.16);
+    border-radius: 0;
+    color: #bae6fd;
+    font-size: 9px;
+    font-weight: 800;
+  }
+}
