@@ -43,7 +43,7 @@
 	},
 	"vars": {
 		"EMAIL_FROM": "onboarding@resend.dev",
-		"MAIL_DELIVERY_MODE": "dual",
+		"MAIL_DELIVERY_MODE": "resend_fallback_gas",
 		"NOTIFICATION_EMAIL": "hololivemessage@gmail.com",
 		"GMAIL_SENDER_EMAIL": "0120tomesuke@gmail.com"
 	}

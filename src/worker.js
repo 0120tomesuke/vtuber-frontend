@@ -523,7 +523,8 @@ async function cleanupOperationalData(env, now = Date.now()) {
     env.DB.prepare('DELETE FROM viewer_samples WHERE observed_at < ?').bind(ninetyDays),
     env.DB.prepare('DELETE FROM notification_log WHERE created_at < ?').bind(ninetyDays),
     env.DB.prepare('DELETE FROM monitor_runs WHERE started_at < ?').bind(ninetyDays),
-    env.DB.prepare('DELETE FROM rss_seen WHERE last_seen_at < ?').bind(ninetyDays)
+    env.DB.prepare('DELETE FROM rss_seen WHERE last_seen_at < ?').bind(ninetyDays),
+    env.DB.prepare('DELETE FROM imminent_notifications WHERE COALESCE(sent_at, claimed_at) < ?').bind(ninetyDays)
   ]);
 }
 async function archiveStats(env, videoId, fallback, bufferedPeak = 0) { const storedPeak = await operationalReady(env) ? await env.DB.prepare('SELECT peak_viewers FROM videos WHERE video_id=?').bind(videoId).first() : null; const [youtube, detail] = await Promise.allSettled([async () => { if (!env.YOUTUBE_API_KEY) return 0; const query = new URLSearchParams({ part: 'contentDetails', id: videoId, key: env.YOUTUBE_API_KEY }); const response = await fetch(`https://www.googleapis.com/youtube/v3/videos?${query}`); return response.ok ? isoDurationSeconds((await response.json()).items?.[0]?.contentDetails?.duration) : 0; }, holodex(env, `/videos/${encodeURIComponent(videoId)}`)]); const peak = Number(storedPeak?.peak_viewers || 0) || Number(bufferedPeak) || Number(detail.status === 'fulfilled' ? detail.value?.live_viewers : 0) || Number(String(fallback.liveViewersFormatted || 0).replaceAll(',', '')) || 0; return { duration: youtube.status === 'fulfilled' ? youtube.value : 0, peak }; }
@@ -774,6 +775,17 @@ async function sendAndLog(env, type, subject, items, send) {
     throw error;
   }
 }
+async function claimStartNotification(env, videoId, now = Date.now()) {
+  if (!await operationalReady(env)) return true;
+  const result = await env.DB.prepare("INSERT INTO imminent_notifications (video_id, status, claimed_at) VALUES (?, 'pending', ?) ON CONFLICT(video_id) DO NOTHING").bind(videoId, now).run();
+  return Number(result.meta?.changes || 0) > 0;
+}
+async function completeStartNotification(env, videoId, now = Date.now()) {
+  if (await operationalReady(env)) await env.DB.prepare("UPDATE imminent_notifications SET status='sent', sent_at=? WHERE video_id=?").bind(now, videoId).run();
+}
+async function releaseStartNotification(env, videoId) {
+  if (await operationalReady(env)) await env.DB.prepare("DELETE FROM imminent_notifications WHERE video_id=? AND status='pending'").bind(videoId).run();
+}
 async function sendEmail(env, subject, items, senderName, master) {
   const recipient = (await notificationSettings(env)).notification_email || env.NOTIFICATION_EMAIL;
   if (!items.length || !recipient) return false;
@@ -831,10 +843,10 @@ function imminentReason(item, master) {
   return reasons.join('');
 }
 async function notifyJustBeforeStart(env) {
-  const now = Date.now(); const minute = tokyoMinute(new Date(now));
-  const isTargetWindow = (minute >= 25 && minute <= 30) || minute >= 55 || minute === 0;
-  if (!isTargetWindow) return;
-  const isScheduledWindow = (minute >= 29 && minute <= 30) || minute >= 59 || minute === 0;
+  const now = Date.now();
+  // The Queue monitor runs every minute, so unlike GAS this can be based on
+  // each stream's actual scheduled time rather than fixed hourly windows.
+  const PRE_START_WINDOW_MINUTES = 2;
   try {
     const settings = await notificationSettings(env); if (!settings.notifications_enabled || !settings.notify_imminent) return;
     const master = await masters(env); await hydrateChannelIcons(env, master); const favoriteIds = Object.keys(master.favorites); const globalIds = new Set(Object.keys(master.global));
@@ -852,19 +864,30 @@ async function notifyJustBeforeStart(env) {
     candidates.forEach((item) => {
       const reason = imminentReason(item, master); if (!reason || cleanedHistory[item.videoId]?.notified_imminent) return;
       const diffMinutes = (new Date(item.startTimeRaw).getTime() - now) / 60_000; const withReason = { ...item, passReason: reason };
-      if (item.isLive || (diffMinutes <= 0 && diffMinutes >= -15)) early.push(withReason);
-      else if (diffMinutes > 0 && diffMinutes <= 20 && isScheduledWindow) scheduled.push(withReason);
+      if (item.isLive && diffMinutes > 0) early.push(withReason);
+      else if (!item.isLive && diffMinutes >= 0 && diffMinutes <= PRE_START_WINDOW_MINUTES) scheduled.push(withReason);
     });
     const next = { ...cleanedHistory };
     for (const item of early) {
+      if (!await claimStartNotification(env, item.videoId, now)) continue;
       const subject = `⚡【開始済み通知】${item.channelTitle} が配信を開始しました（前倒し/フライング）`;
-      const sent = await sendAndLog(env, 'imminent_early', subject, [item], () => sendStartEmail(env, subject, [item], 'ホロライブ緊急通知'));
-      if (sent) next[item.videoId] = { time: now, notified_imminent: true };
+      try {
+        const sent = await sendAndLog(env, 'imminent_early', subject, [item], () => sendStartEmail(env, subject, [item], 'ホロライブ緊急通知'));
+        if (sent) { await completeStartNotification(env, item.videoId, now); next[item.videoId] = { time: now, notified_imminent: true }; }
+        else await releaseStartNotification(env, item.videoId);
+      } catch (error) { await releaseStartNotification(env, item.videoId); throw error; }
     }
-    if (scheduled.length) {
-      const subject = `🔔 配信開始: ${scheduled.length}件の注目配信`;
-      const sent = await sendAndLog(env, 'imminent_scheduled', subject, scheduled, () => sendStartEmail(env, subject, scheduled, '配信開始通知'));
-      if (sent) scheduled.forEach((item) => { next[item.videoId] = { time: now, notified_imminent: true }; });
+    const claimedScheduled = [];
+    for (const item of scheduled) if (await claimStartNotification(env, item.videoId, now)) claimedScheduled.push(item);
+    if (claimedScheduled.length) {
+      const subject = `🔔 配信開始: ${claimedScheduled.length}件の注目配信`;
+      try {
+        const sent = await sendAndLog(env, 'imminent_scheduled', subject, claimedScheduled, () => sendStartEmail(env, subject, claimedScheduled, '配信開始通知'));
+        if (sent) {
+          await Promise.all(claimedScheduled.map((item) => completeStartNotification(env, item.videoId, now)));
+          claimedScheduled.forEach((item) => { next[item.videoId] = { time: now, notified_imminent: true }; });
+        } else await Promise.all(claimedScheduled.map((item) => releaseStartNotification(env, item.videoId)));
+      } catch (error) { await Promise.all(claimedScheduled.map((item) => releaseStartNotification(env, item.videoId))); throw error; }
     }
     if (JSON.stringify(next) !== JSON.stringify(history)) await setState(env, 'imminent_notification_history', next);
   } catch (error) {
