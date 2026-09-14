@@ -792,7 +792,7 @@
 
     let viewersHtml = "";
     if (video.isLive && video.liveViewersFormatted) {
-      viewersHtml = `<div class="live-viewers ${isMax ? "max-live" : ""}">同接：${video.liveViewersFormatted} <button class="viewer-chart-btn" onclick="event.preventDefault();event.stopPropagation();openViewerChart('${video.videoId}', decodeURIComponent('${encodeURIComponent(video.title || '')}'))">📈 推移</button></div>`;
+      viewersHtml = `<div class="live-viewers ${isMax ? "max-live" : ""}"><span class="viewer-live-dot" aria-hidden="true"></span><span class="viewer-label">同接</span><strong>${video.liveViewersFormatted}</strong><button class="viewer-chart-btn" aria-label="同接推移を表示" onclick="event.preventDefault();event.stopPropagation();openViewerChart('${video.videoId}', decodeURIComponent('${encodeURIComponent(video.title || '')}'))"><span class="viewer-chart-icon" aria-hidden="true">📈</span>推移</button></div>`;
     } else if (video.isEnded && video.liveViewersFormatted) {
       viewersHtml = `<div class="live-viewers ended-stats"><span class="ended-stat-label">最大同接</span><strong>${video.liveViewersFormatted}</strong><button class="viewer-chart-btn" onclick="event.preventDefault();event.stopPropagation();openViewerChart('${video.videoId}', decodeURIComponent('${encodeURIComponent(video.title || '')}'))">推移</button></div>`;
     }
