@@ -22,6 +22,8 @@ Holodexを主データ源にし、登録チャンネルのYouTube RSSとYouTube 
 
    メール通知（Resend）: `RESEND_API_KEY`, `EMAIL_FROM`, `NOTIFICATION_EMAIL`
 
+   送信切替: `MAIL_DELIVERY_MODE` は `gas`（既定）、`dual`（GASとResendの並行送信）、`resend_fallback_gas`（Resend優先・失敗時GAS）、`resend`、`gmail` のいずれか。
+
    管理画面: `ADMIN_PASSWORD`（十分に長い任意のパスワード）
 
 6. Googleサービスアカウントのメールアドレスを、対象スプレッドシートの編集者に追加する。
@@ -44,6 +46,10 @@ Cloudflareは監視・通知判定だけを担当し、メール送信だけをG
 5. Cloudflare WorkerのSecretsに `GAS_MAIL_RELAY_URL` と `GAS_MAIL_RELAY_TOKEN` を登録する。前者には `/exec` URL、後者には手順2と同じトークンを入れる。
 
 トークンが一致しないリクエストはGAS側で拒否されるため、Webアプリを公開しても第三者がメール送信に利用することはできません。GAS中継が設定されると、Gmail APIとResendより優先されます。
+
+## Resendへ段階移行する
+
+Resendで検証済みの差出人アドレスを作成したら、Cloudflare WorkerのSecretに `RESEND_API_KEY`、通常の変数に `EMAIL_FROM`（例: `notify@example.com`）を設定する。`MAIL_DELIVERY_MODE=dual` の間はGASとResendの両方へ送信し、通知履歴には `sent` または `sent_partial` と送信経路が残る。1〜2日問題がなければ `MAIL_DELIVERY_MODE=resend_fallback_gas` に変更すると、通常はResendだけで送信し、Resend APIが失敗した場合だけGAS中継へ自動フォールバックする。
 
 ## Gmail APIで無料送信する（テスト用）
 

@@ -549,6 +549,9 @@ async function resendSend(env, payload) {
   const detail = (await response.text()).replaceAll(/\s+/g, ' ').slice(0, 500);
   throw new Error(`Resend failed: ${response.status}${detail ? ` ${detail}` : ''}`);
 }
+function resendReady(env) {
+  return Boolean(env.RESEND_API_KEY && env.EMAIL_FROM);
+}
 function gasRelayReady(env) {
   return Boolean(env.GAS_MAIL_RELAY_URL && env.GAS_MAIL_RELAY_TOKEN);
 }
@@ -626,20 +629,64 @@ async function gmailSend(env, { senderName, recipient, subject, html: htmlBody }
   if (!response.ok) throw new Error(`Gmail send failed: ${response.status} ${detail.slice(0, 500)}`);
   return true;
 }
+async function deliverMail(providers) {
+  if (!providers.length) return { sent: false, partial: false, providers: {}, errors: [] };
+  const results = await Promise.allSettled(providers.map((provider) => provider.send()));
+  const providerStatus = {};
+  const errors = [];
+  let succeeded = 0;
+  results.forEach((result, index) => {
+    const name = providers[index].name;
+    if (result.status === 'fulfilled') { providerStatus[name] = 'sent'; succeeded += 1; }
+    else { providerStatus[name] = 'failed'; errors.push(`${name}: ${String(result.reason?.message || result.reason || 'unknown error').slice(0, 500)}`); }
+  });
+  if (!succeeded) throw new Error(`All mail providers failed. ${errors.join(' | ')}`);
+  return { sent: true, partial: succeeded !== providers.length, providers: providerStatus, errors };
+}
 async function sendMail(env, { senderName, recipient, subject, html: htmlBody }) {
-  // The GAS relay uses the owner's MailApp authorization and therefore avoids
-  // the seven-day refresh-token expiry of an unpublished Gmail OAuth app.
-  if (gasRelayReady(env)) return gasRelaySend(env, { senderName, recipient, subject, html: htmlBody });
-  // Keep previous providers as fallbacks until the relay is configured.
-  if (gmailReady(env)) return gmailSend(env, { senderName, recipient, subject, html: htmlBody });
-  if (env.RESEND_API_KEY && env.EMAIL_FROM) return resendSend(env, { from: `${senderName} <${env.EMAIL_FROM}>`, to: [recipient], subject, html: htmlBody });
-  return false;
+  const gas = () => gasRelaySend(env, { senderName, recipient, subject, html: htmlBody });
+  const gmail = () => gmailSend(env, { senderName, recipient, subject, html: htmlBody });
+  const resend = () => resendSend(env, { from: `${senderName} <${env.EMAIL_FROM}>`, to: [recipient], subject, html: htmlBody });
+  const mode = String(env.MAIL_DELIVERY_MODE || '').toLowerCase();
+  if (mode === 'dual') {
+    // One successful path marks the event notified. This avoids repeat mails
+    // from the healthy provider if the other route is temporarily unavailable.
+    const providers = [];
+    if (gasRelayReady(env)) providers.push({ name: 'gas', send: gas });
+    if (resendReady(env)) providers.push({ name: 'resend', send: resend });
+    const result = await deliverMail(providers);
+    if (!gasRelayReady(env) || !resendReady(env)) {
+      result.partial = true;
+      if (!gasRelayReady(env)) result.errors.push('gas: not configured');
+      if (!resendReady(env)) result.errors.push('resend: not configured');
+    }
+    return result;
+  }
+  if (mode === 'resend_fallback_gas') {
+    try {
+      return await deliverMail(resendReady(env) ? [{ name: 'resend', send: resend }] : []);
+    } catch (error) {
+      if (!gasRelayReady(env)) throw error;
+      const fallback = await deliverMail([{ name: 'gas', send: gas }]);
+      fallback.partial = true;
+      fallback.providers = { resend: 'failed', ...fallback.providers };
+      fallback.errors.unshift(`resend: ${String(error.message || error).slice(0, 500)}`);
+      return fallback;
+    }
+  }
+  if (mode === 'resend') return deliverMail(resendReady(env) ? [{ name: 'resend', send: resend }] : []);
+  if (mode === 'gmail') return deliverMail(gmailReady(env) ? [{ name: 'gmail', send: gmail }] : []);
+  // Default and explicit "gas": retain the permanent relay until cutover.
+  if (gasRelayReady(env)) return deliverMail([{ name: 'gas', send: gas }]);
+  if (gmailReady(env)) return deliverMail([{ name: 'gmail', send: gmail }]);
+  return deliverMail(resendReady(env) ? [{ name: 'resend', send: resend }] : []);
 }
 async function sendAndLog(env, type, subject, items, send) {
   try {
-    const sent = await send();
-    await logNotification(env, type, subject, items, sent ? 'sent' : 'skipped');
-    return sent;
+    const delivery = await send();
+    const result = typeof delivery === 'boolean' ? { sent: delivery, partial: false, providers: {}, errors: [] } : delivery;
+    await logNotification(env, type, subject, items, result.sent ? (result.partial ? 'sent_partial' : 'sent') : 'skipped', { providers: result.providers, errors: result.errors });
+    return result.sent;
   } catch (error) {
     await logNotification(env, type, subject, items, 'failed', { error: String(error.message || error).slice(0, 1000) });
     throw error;

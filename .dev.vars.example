@@ -5,6 +5,8 @@ GOOGLE_SHEETS_ID=
 GOOGLE_SERVICE_ACCOUNT_JSON=
 RESEND_API_KEY=
 EMAIL_FROM=
+# gas (default), dual (GAS + Resend), resend_fallback_gas, resend, gmail
+MAIL_DELIVERY_MODE=gas
 NOTIFICATION_EMAIL=
 # Recommended permanent free delivery: a tiny GAS MailApp relay. The token is
 # an arbitrary long shared secret stored in GAS Script Properties.
