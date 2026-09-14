@@ -1004,8 +1004,8 @@ body.menu-open #side-menu {
      本文の開始時刻・出演者の配置は従来どおり保つ。 */
   .card:has(.label-live) .live-viewers:not(.ended-stats) {
     position: absolute !important;
-    top: calc(56.25cqw - 36px) !important;
-    right: 9px !important;
+    top: calc(56.25cqw - 30px) !important;
+    right: 4px !important;
     left: auto !important;
     display: inline-flex !important;
     align-items: center;
