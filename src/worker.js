@@ -537,7 +537,25 @@ async function cleanupOperationalData(env, now = Date.now()) {
     env.DB.prepare('DELETE FROM notification_deliveries WHERE COALESCE(sent_at, claimed_at) < ?').bind(ninetyDays)
   ]);
 }
-async function archiveStats(env, videoId, fallback, bufferedPeak = 0) { const storedPeak = await operationalReady(env) ? await env.DB.prepare('SELECT peak_viewers FROM videos WHERE video_id=?').bind(videoId).first() : null; const [youtube, detail] = await Promise.allSettled([async () => { if (!env.YOUTUBE_API_KEY) return 0; const query = new URLSearchParams({ part: 'contentDetails', id: videoId, key: env.YOUTUBE_API_KEY }); const response = await fetch(`https://www.googleapis.com/youtube/v3/videos?${query}`); return response.ok ? isoDurationSeconds((await response.json()).items?.[0]?.contentDetails?.duration) : 0; }, holodex(env, `/videos/${encodeURIComponent(videoId)}`)]); const peak = Number(storedPeak?.peak_viewers || 0) || Number(bufferedPeak) || Number(detail.status === 'fulfilled' ? detail.value?.live_viewers : 0) || Number(String(fallback.liveViewersFormatted || 0).replaceAll(',', '')) || 0; return { duration: youtube.status === 'fulfilled' ? youtube.value : 0, peak }; }
+const archiveStatsCache = new WeakMap();
+async function archiveStats(env, videoId, fallback, bufferedPeak = 0) {
+  let cache = archiveStatsCache.get(env);
+  if (!cache) { cache = new Map(); archiveStatsCache.set(env, cache); }
+  if (cache.has(videoId)) return cache.get(videoId);
+  const task = (async () => {
+    const storedPeak = await operationalReady(env) ? await env.DB.prepare('SELECT peak_viewers FROM videos WHERE video_id=?').bind(videoId).first() : null;
+    const [youtube, detail] = await Promise.allSettled([async () => {
+      if (!env.YOUTUBE_API_KEY) return 0;
+      const query = new URLSearchParams({ part: 'contentDetails', id: videoId, key: env.YOUTUBE_API_KEY });
+      const response = await fetch(`https://www.googleapis.com/youtube/v3/videos?${query}`);
+      return response.ok ? isoDurationSeconds((await response.json()).items?.[0]?.contentDetails?.duration) : 0;
+    }, holodex(env, `/videos/${encodeURIComponent(videoId)}`)]);
+    const peak = Number(storedPeak?.peak_viewers || 0) || Number(bufferedPeak) || Number(detail.status === 'fulfilled' ? detail.value?.live_viewers : 0) || Number(String(fallback.liveViewersFormatted || 0).replaceAll(',', '')) || 0;
+    return { duration: youtube.status === 'fulfilled' ? youtube.value : 0, peak };
+  })();
+  cache.set(videoId, task);
+  return task;
+}
 async function endedFrom(previous, current, env, keep, viewerBuffer = {}) { const currentIds = new Set(current.map((item) => item.videoId)); const candidates = previous.filter((item) => !currentIds.has(item.videoId) && new Date(item.startTimeRaw).getTime() <= Date.now()); return (await Promise.all(candidates.map(async (item) => { const stats = await archiveStats(env, item.videoId, item, viewerBuffer[item.videoId]?.peak); return { ...item, isLive: false, isEnded: true, liveViewersFormatted: stats.peak ? Number(stats.peak).toLocaleString() : item.liveViewersFormatted, durationLabel: stats.duration ? formatDuration(stats.duration) : item.durationLabel }; }))).filter((item) => new Date(item.startTimeRaw).getTime() >= keep); }
 const html = (value) => String(value || '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
 const formatDate = (value) => format(value, true);
@@ -1049,10 +1067,33 @@ async function monitor(env) {
   const classifiedFavorites = favorites.map(classify);
   const split = async (items, previousLive, previousUpcoming, previousEnded) => {
     const live = items.filter((item) => item.isLive); const upcoming = items.filter((item) => !item.isLive && !item.isEnded);
-    const disappeared = await endedFrom([...previousLive, ...previousUpcoming], items, env, keep, viewerBuffer);
+    const explicitEnded = items.filter((item) => item.isEnded);
+    const previousEndedById = new Map(previousEnded.map((item) => [item.videoId, item]));
+    const durationTargets = [...new Map([
+      ...explicitEnded,
+      // Backfill recent cards that were archived before duration enrichment
+      // was unified. Limit this to one day to keep the one-time repair small.
+      ...previousEnded.filter((item) => !item.durationLabel && new Date(item.startTimeRaw).getTime() >= now - 24 * 3600_000)
+    ].map((item) => [item.videoId, item])).values()].filter((item) => !previousEndedById.get(item.videoId)?.durationLabel);
+    const [disappeared, archivedExplicit] = await Promise.all([
+      endedFrom([...previousLive, ...previousUpcoming], items, env, keep, viewerBuffer),
+      // Holodex can report `past` before it exposes a duration.  Treat that
+      // transition exactly like a disappeared LIVE entry and obtain the final
+      // duration from YouTube once, rather than leaving a blank badge.
+      Promise.all(durationTargets.map(async (item) => {
+        const stats = await archiveStats(env, item.videoId, item, viewerBuffer[item.videoId]?.peak);
+        return { ...item, liveViewersFormatted: stats.peak ? Number(stats.peak).toLocaleString() : item.liveViewersFormatted, durationLabel: stats.duration ? formatDuration(stats.duration) : item.durationLabel };
+      }))
+    ]);
+    // Preserve a duration already fetched for an older archived record when
+    // Holodex later sends the same ended video without one.
+    const endedFromHolodex = explicitEnded.map((item) => {
+      const previous = previousEndedById.get(item.videoId);
+      return previous?.durationLabel ? { ...item, durationLabel: previous.durationLabel } : item;
+    });
     // Current Holodex details come last so they replace stale guest data in
     // the 90-day archive instead of being overwritten by the old D1 copy.
-    const ended = merge([...previousEnded, ...disappeared, ...items.filter((item) => item.isEnded)]).filter((item) => new Date(item.startTimeRaw).getTime() >= keep).sort((a, b) => new Date(b.startTimeRaw) - new Date(a.startTimeRaw));
+    const ended = merge([...previousEnded, ...disappeared, ...endedFromHolodex, ...archivedExplicit]).filter((item) => new Date(item.startTimeRaw).getTime() >= keep).sort((a, b) => new Date(b.startTimeRaw) - new Date(a.startTimeRaw));
     return { live, upcoming, ended };
   };
   const [allState, uiState] = await Promise.all([split(all, previousAllLive, previousAllUpcoming, previousAllEnded), split(classifiedFavorites, previousUiLive, previousUiUpcoming, previousUiEnded)]);
