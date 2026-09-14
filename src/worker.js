@@ -915,7 +915,10 @@ async function monitor(env) {
     nextRssCursor = rssBatch.nextCursor;
     scannedYoutube = true;
   }
-  const all = merge([...holodexVideos, ...youtubeVideos, ...guestRefresh.videos]).map((item) => enrichGuestSignals(item, master)).filter((item) => shouldInclude(item, master));
+  // A previously detected external stream is refreshed separately.  Once it no
+  // longer has a Holodex guest or a title match, it must leave the list rather
+  // than remain forever because of its old persisted state.
+  const all = merge([...holodexVideos, ...youtubeVideos, ...guestRefresh.videos]).map((item) => enrichGuestSignals(item, master)).filter((item) => hasRosterConnection(item, globalIds) && shouldInclude(item, master));
   const favRaw = Object.keys(master.favorites).length ? await holodex(env, '/users/live', { channels: Object.keys(master.favorites).join(',') }) : [];
   const specialRaw = await holodex(env, '/live', { org: 'Hololive', include: 'mentions,description', max_upcoming_hours: '336' });
   const specialCandidates = specialRaw.filter((raw) => isSpecial(raw.title, master.eventKeywords));
