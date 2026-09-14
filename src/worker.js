@@ -320,14 +320,21 @@ function mergePeople(...lists) {
   });
   return [...map.values()];
 }
-function merge(videos) {
+export function merge(videos) {
   const map = new Map();
   videos.filter(Boolean).forEach((item) => {
     const prior = map.get(item.videoId);
     if (!prior) { map.set(item.videoId, item); return; }
-    // Equal-priority Holodex data is newer when it arrives later in the
-    // monitor run. Preserve the union of guests either way.
-    const preferIncoming = (item.priority || 1) <= (prior.priority || 1);
+    // Most fields prefer the more authoritative source.  Stream state is an
+    // exception: an older upcoming response must never turn a known LIVE
+    // stream back into upcoming.  Only an explicit ended state may supersede
+    // live.  This matters because Holodex list/detail endpoints can update at
+    // slightly different times.
+    const phase = (video) => video.isEnded ? 3 : video.isLive ? 2 : 1;
+    const priorPhase = phase(prior);
+    const incomingPhase = phase(item);
+    let preferIncoming = (item.priority || 1) <= (prior.priority || 1);
+    if (incomingPhase !== priorPhase) preferIncoming = incomingPhase > priorPhase;
     const preferred = preferIncoming ? item : prior;
     const mentionSource = preferIncoming && item.mentionsKnown ? item : prior.mentionsKnown ? prior : null;
     map.set(item.videoId, {
@@ -975,11 +982,16 @@ async function monitor(env) {
   const master = await masters(env); await hydrateChannelIcons(env, master); const ids = Object.keys(master.global); const globalIds = new Set(ids);
   const relationalStore = await operationalReady(env);
   const chunks = Array.from({ length: Math.ceil(ids.length / 50) }, (_, index) => ids.slice(index * 50, index * 50 + 50));
-  const own = await Promise.all(chunks.map((chunk) => holodex(env, '/live', { channels: chunk.join(','), include: 'mentions,description', max_upcoming_hours: '336' })));
-  const external = await holodex(env, '/live', { org: 'Hololive', include: 'mentions,description', limit: '50', max_upcoming_hours: '336' });
+  const favoriteChannelIds = Object.keys(master.favorites);
+  const [own, external, favRaw] = await Promise.all([
+    Promise.all(chunks.map((chunk) => holodex(env, '/live', { channels: chunk.join(','), include: 'mentions,description', max_upcoming_hours: '336' }))),
+    holodex(env, '/live', { org: 'Hololive', include: 'mentions,description', limit: '50', max_upcoming_hours: '336' }),
+    favoriteChannelIds.length ? holodex(env, '/users/live', { channels: favoriteChannelIds.join(',') }) : []
+  ]);
   const allowedExternalIds = await allowedExternalChannelIds(env, external, globalIds);
   const permittedExternal = external.filter((raw) => globalIds.has(raw.channel?.id) || allowedExternalIds.has(raw.channel?.id));
   const holodexVideos = [...own.flat(), ...permittedExternal].map((raw) => enrichGuestSignals(video(raw, globalIds, master.talentMap), master)).filter((item) => hasRosterConnection(item, globalIds) && shouldInclude(item, master));
+  const favoriteVideos = favRaw.map((raw) => enrichGuestSignals(video(raw, globalIds, master.talentMap), master));
   const [dbAllLive, dbAllUpcoming, dbAllEnded, dbUiLive, dbUiUpcoming, dbUiEnded, dbNotificationHistory, legacyAllLive, legacyAllUpcoming, legacyAllEnded, legacyUiLive, legacyUiUpcoming, legacyUiEnded, legacyNotificationHistory, viewerBuffer, monitorError] = await Promise.all([
     readVideoState(env, 'all', 'live'), readVideoState(env, 'all', 'upcoming'), readVideoState(env, 'all', 'ended'), readVideoState(env, 'ui', 'live'), readVideoState(env, 'ui', 'upcoming'), readVideoState(env, 'ui', 'ended'), readNotificationHistory(env),
     getState(env, 'all_live', []), getState(env, 'all_upcoming', []), getState(env, 'all_ended', []), getState(env, 'ui_live', []), getState(env, 'ui_upcoming', []), getState(env, 'ui_ended', []), getState(env, 'notification_history', {}), getState(env, 'viewer_buffer', {}), getState(env, 'monitor_error', null)
@@ -1012,15 +1024,23 @@ async function monitor(env) {
   // A previously detected external stream is refreshed separately.  Once it no
   // longer has a Holodex guest or a title match, it must leave the list rather
   // than remain forever because of its old persisted state.
-  const all = merge([...holodexVideos, ...youtubeVideos, ...guestRefresh.videos]).map((item) => enrichGuestSignals(item, master)).filter((item) => hasRosterConnection(item, globalIds) && shouldInclude(item, master));
-  const favRaw = Object.keys(master.favorites).length ? await holodex(env, '/users/live', { channels: Object.keys(master.favorites).join(',') }) : [];
+  // Cross-check only streams close to their scheduled start.  This is one
+  // videos.list request for up to 50 IDs, so it stays well within the free
+  // YouTube quota while removing a Holodex propagation delay from LIVE state.
+  const liveStatusIds = [...new Set([...favoriteVideos, ...holodexVideos]
+    .filter((item) => {
+      const start = new Date(item.startTimeRaw).getTime();
+      return !item.isEnded && Number.isFinite(start) && start >= now - 3 * 3600_000 && start <= now + 30 * 60_000;
+    }).map((item) => item.videoId))].slice(0, 50);
+  const youtubeLiveStatus = await youtubeDetails(env, liveStatusIds);
+  const all = merge([...holodexVideos, ...youtubeVideos, ...youtubeLiveStatus, ...guestRefresh.videos, ...favoriteVideos]).map((item) => enrichGuestSignals(item, master)).filter((item) => hasRosterConnection(item, globalIds) && shouldInclude(item, master));
   const specialRaw = await holodex(env, '/live', { org: 'Hololive', include: 'mentions,description', max_upcoming_hours: '336' });
   const specialCandidates = specialRaw.filter((raw) => isSpecial(raw.title, master.eventKeywords));
   const allowedSpecialExternalIds = await allowedExternalChannelIds(env, specialCandidates, globalIds);
   const specials = specialCandidates.filter((raw) => globalIds.has(raw.channel?.id) || allowedSpecialExternalIds.has(raw.channel?.id)).map((raw) => ({ ...enrichGuestSignals(video(raw, globalIds, master.talentMap), master), isSpecial: true })).filter((item) => hasRosterConnection(item, globalIds));
-  const favorites = merge([...favRaw.map((raw) => enrichGuestSignals(video(raw, globalIds, master.talentMap), master)), ...specials, ...all.filter((item) => primaryTarget(item, master))]);
+  const favorites = merge([...favoriteVideos, ...specials, ...all.filter((item) => primaryTarget(item, master))]);
   const keep = now - 90 * 86400000;
-  const favoriteIds = new Set(Object.keys(master.favorites));
+  const favoriteIds = new Set(favoriteChannelIds);
   const classify = (item) => {
     const previous = notificationHistory[item.videoId];
     if (!favoriteIds.has(item.channelId) && !item.isSpecial && !isWithin72Hours(item.startTimeRaw, now) && !item.isLive) return { ...item, previous, notificationKind: '', changedFields: [] };
