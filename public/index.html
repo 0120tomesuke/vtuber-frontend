@@ -788,7 +788,7 @@
     }).join("");
 
     const guestHtml = `<div class="card-guests">${ownerIconPC}${guestIcons}</div>`;
-    const keywordHtml = video.keyword ? `<div class="card-keyword"><span class="card-keyword-label">イベント</span>${video.keyword}</div>` : "";
+    const keywordHtml = video.keyword ? `<div class="card-keyword">${video.keyword}</div>` : "";
 
     let viewersHtml = "";
     if (video.isLive && video.liveViewersFormatted) {
