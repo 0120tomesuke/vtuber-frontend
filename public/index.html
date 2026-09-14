@@ -780,11 +780,11 @@
     const ownerIconPC = video.channelIcon ? `<img src="${video.channelIcon}" class="owner-icon-pc" title="${video.channelTitle || ''}" alt="">` : "";
     const ownerIconSP = video.channelIcon ? `<img src="${video.channelIcon}" class="owner-icon-sp" alt="">` : "";
 
-    const guestIcons = (video.guests || []).map(guest => {
+    const guestIcons = (video.guests || []).map((guest, index) => {
       const name = (typeof guest === 'object' && guest !== null) ? guest.name : guest;
       const icon = (typeof guest === 'object' && guest !== null) ? guest.icon : "";
       if (!icon) return `<span class="guest-name-text">${name || "不明"}</span>`; 
-      return `<img src="${icon}" class="guest-icon" title="${name || '不明'}" alt="">`;
+      return `<img src="${icon}" class="guest-icon" style="--i:${index}" title="${name || '不明'}" alt="">`;
     }).join("");
 
     const guestHtml = `<div class="card-guests">${ownerIconPC}${guestIcons}</div>`;

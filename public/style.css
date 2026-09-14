@@ -806,6 +806,63 @@ body.menu-open #side-menu {
   }
 
   .card-keyword { font-size: 12px; font-weight: 600; color: #94a3b8; }
+
+  /* スマホもPCと同じく、同接は本文を圧迫せずサムネイル端に置く。 */
+  .card:has(.label-live) .live-viewers:not(.ended-stats),
+  .card:has(.label-ended) .live-viewers.ended-stats {
+    position: absolute !important;
+    top: calc(56.25cqw - 30px) !important;
+    z-index: 21;
+    display: inline-flex !important;
+    align-items: center;
+    gap: 4px;
+    margin: 0 !important;
+    padding: 4px 6px !important;
+    border-radius: 6px !important;
+    background: linear-gradient(135deg, rgba(15, 23, 42, .82), rgba(30, 41, 59, .88)) !important;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.08), 0 2px 8px rgba(0,0,0,.25) !important;
+    color: #f8fafc !important;
+    font-size: 10px !important;
+    font-weight: 700;
+    line-height: 1 !important;
+    text-shadow: none !important;
+    white-space: nowrap;
+  }
+  .card:has(.label-live) .live-viewers:not(.ended-stats) {
+    right: 4px !important;
+    left: auto !important;
+    border: 1px solid rgba(255, 119, 145, .48) !important;
+  }
+  .card:has(.label-ended) .live-viewers.ended-stats {
+    right: auto !important;
+    left: 4px !important;
+    border: 1px solid rgba(56, 189, 248, .58) !important;
+  }
+  .card:has(.label-live) .live-viewers:not(.ended-stats) strong,
+  .card:has(.label-ended) .live-viewers.ended-stats strong { color: #fff; font-size: 13px; letter-spacing: .03em; }
+  .card:has(.label-live) .viewer-label { color: #fda4af; }
+  .card:has(.label-ended) .ended-stat-label { color: #7dd3fc; }
+  .card:has(.label-live) .viewer-live-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--live-danger);
+    box-shadow: 0 0 7px rgba(255, 77, 125, .9);
+    animation: pulse 1.5s infinite;
+  }
+  .card:has(.label-live) .live-viewers:not(.ended-stats) .viewer-chart-btn,
+  .card:has(.label-ended) .live-viewers.ended-stats .viewer-chart-btn {
+    margin-left: 1px;
+    padding: 1px 3px;
+    border: 0;
+    border-left: 1px solid rgba(255,255,255,.16);
+    border-radius: 0;
+    font-size: 9px;
+    font-weight: 800;
+  }
+  .card:has(.label-live) .live-viewers:not(.ended-stats) .viewer-chart-btn { color: #bae6fd; }
+  .card:has(.label-ended) .live-viewers.ended-stats .viewer-chart-btn { color: #bae6fd; }
+  .card:has(.label-live) .viewer-chart-icon { display: none; }
 }
 
 /* --- [PC版設定] (min-width: 769px) --- */
