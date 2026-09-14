@@ -1000,45 +1000,25 @@ body.menu-open #side-menu {
     transform: translateY(-5px);
   }
 
-  /* 配信中カードだけは、同接をサムネイルに重ねず本文の情報帯へ。
-     時刻・同接・出演者をひとつのまとまりとして読めるようにする。 */
-  .card:has(.label-live) .card-body {
-    display: grid !important;
-    grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-areas:
-      "time viewers"
-      "guests guests";
-    align-items: center !important;
-    gap: 8px 6px !important;
-  }
-
-  .card:has(.label-live) .card-time {
-    grid-area: time;
-    justify-self: start;
-    text-align: left;
-    white-space: nowrap;
-  }
-
-  .card:has(.label-live) .card-guests {
-    grid-area: guests;
-    margin-top: 1px;
-  }
-
+  /* 配信中カードの同接は、サムネイル右下に小さく重ねる。
+     本文の開始時刻・出演者の配置は従来どおり保つ。 */
   .card:has(.label-live) .live-viewers:not(.ended-stats) {
-    position: static !important;
-    grid-area: viewers;
+    position: absolute !important;
+    top: calc(56.25cqw - 36px) !important;
+    right: 9px !important;
+    left: auto !important;
     display: inline-flex !important;
     align-items: center;
-    gap: 5px;
+    gap: 4px;
     min-width: 0;
     margin: 0 !important;
-    padding: 5px 7px !important;
-    border: 1px solid rgba(255, 77, 125, .52) !important;
-    border-radius: 7px !important;
-    background: linear-gradient(135deg, rgba(30, 41, 59, .96), rgba(15, 23, 42, .98)) !important;
-    box-shadow: inset 0 1px 0 rgba(255,255,255,.07), 0 0 0 1px rgba(255, 77, 125, .08) !important;
+    padding: 4px 6px !important;
+    border: 1px solid rgba(255, 119, 145, .48) !important;
+    border-radius: 6px !important;
+    background: linear-gradient(135deg, rgba(15, 23, 42, .82), rgba(30, 41, 59, .88)) !important;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.08), 0 2px 8px rgba(0,0,0,.25) !important;
     color: #f8fafc !important;
-    font-size: 11px !important;
+    font-size: 10px !important;
     font-weight: 700 !important;
     line-height: 1 !important;
     letter-spacing: .02em;
@@ -1048,7 +1028,7 @@ body.menu-open #side-menu {
 
   .card:has(.label-live) .live-viewers:not(.ended-stats) strong {
     color: #ffffff;
-    font-size: 14px;
+    font-size: 13px;
     letter-spacing: .03em;
   }
 
@@ -1064,12 +1044,12 @@ body.menu-open #side-menu {
 
   .card:has(.label-live) .live-viewers:not(.ended-stats) .viewer-chart-btn {
     margin-left: 1px;
-    padding: 2px 4px;
+    padding: 1px 3px;
     border: 0;
     border-left: 1px solid rgba(255,255,255,.16);
     border-radius: 0;
     color: #bae6fd;
-    font-size: 10px;
+    font-size: 9px;
     font-weight: 800;
   }
 
