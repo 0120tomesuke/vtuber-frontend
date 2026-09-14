@@ -445,7 +445,7 @@ function prioritizedRssBatch(channelIds, master, cursor, size) {
   const regularPart = rotatingBatch(regular, cursor, size - priorityPart.length);
   return { channels: [...priorityPart, ...regularPart], nextCursor: regular.length ? (Number(cursor || 0) + regularPart.length) % regular.length : 0 };
 }
-async function youtubeDetails(env, ids) { if (!env.YOUTUBE_API_KEY || !ids.length) return []; const chunks = Array.from({ length: Math.ceil(ids.length / 50) }, (_, i) => ids.slice(i * 50, i * 50 + 50)); const cutoff = Date.now() + 14 * 86400000; const results = await Promise.all(chunks.map(async (chunk) => { const query = new URLSearchParams({ part: 'snippet,liveStreamingDetails', id: chunk.join(','), key: env.YOUTUBE_API_KEY }); const response = await fetch(`https://www.googleapis.com/youtube/v3/videos?${query}`); if (!response.ok) throw new Error(`YouTube API failed: ${response.status}`); return (await response.json()).items || []; })); return results.flat().flatMap((item) => { const details = item.liveStreamingDetails; const live = item.snippet?.liveBroadcastContent === 'live'; const ended = item.snippet?.liveBroadcastContent === 'none' && Boolean(details?.actualEndTime); if (!details || ended) return []; const startTimeRaw = details.actualStartTime || details.scheduledStartTime || item.snippet?.publishedAt; if (!live && new Date(startTimeRaw).getTime() > cutoff) return []; return [{ videoId: item.id, title: item.snippet?.title || '', description: String(item.snippet?.description || '').slice(0, 6000), channelTitle: item.snippet?.channelTitle || '', channelId: item.snippet?.channelId || '', channelIcon: item.snippet?.thumbnails?.default?.url || '', thumbnail: `https://i.ytimg.com/vi/${item.id}/hqdefault.jpg`, videoUrl: `https://www.youtube.com/watch?v=${item.id}`, viewers: Number(details.concurrentViewers || 0), liveViewersFormatted: details.concurrentViewers ? Number(details.concurrentViewers).toLocaleString() : null, startTimeRaw, startTime: format(startTimeRaw), dateKey: format(startTimeRaw, true), isLive: live, isEnded: false, mentions: [], guests: [], source: 'youtube_api', priority: 3 }]; }); }
+async function youtubeDetails(env, ids, { includeEnded = false } = {}) { if (!env.YOUTUBE_API_KEY || !ids.length) return []; const chunks = Array.from({ length: Math.ceil(ids.length / 50) }, (_, i) => ids.slice(i * 50, i * 50 + 50)); const cutoff = Date.now() + 14 * 86400000; const results = await Promise.all(chunks.map(async (chunk) => { const query = new URLSearchParams({ part: 'snippet,liveStreamingDetails', id: chunk.join(','), key: env.YOUTUBE_API_KEY }); const response = await fetch(`https://www.googleapis.com/youtube/v3/videos?${query}`); if (!response.ok) throw new Error(`YouTube API failed: ${response.status}`); return (await response.json()).items || []; })); return results.flat().flatMap((item) => { const details = item.liveStreamingDetails; const live = item.snippet?.liveBroadcastContent === 'live'; const ended = item.snippet?.liveBroadcastContent === 'none' && Boolean(details?.actualEndTime); if (!details || (ended && !includeEnded)) return []; const startTimeRaw = details.actualStartTime || details.scheduledStartTime || item.snippet?.publishedAt; if (!live && !ended && new Date(startTimeRaw).getTime() > cutoff) return []; return [{ videoId: item.id, title: item.snippet?.title || '', description: String(item.snippet?.description || '').slice(0, 6000), channelTitle: item.snippet?.channelTitle || '', channelId: item.snippet?.channelId || '', channelIcon: item.snippet?.thumbnails?.default?.url || '', thumbnail: `https://i.ytimg.com/vi/${item.id}/hqdefault.jpg`, videoUrl: `https://www.youtube.com/watch?v=${item.id}`, viewers: Number(details.concurrentViewers || 0), liveViewersFormatted: details.concurrentViewers ? Number(details.concurrentViewers).toLocaleString() : null, startTimeRaw, startTime: format(startTimeRaw), dateKey: format(startTimeRaw, true), isLive: live, isEnded: ended, mentions: [], guests: [], source: 'youtube_api', priority: 3 }]; }); }
 function updateViewerBuffer(buffer, liveVideos, now) {
   const threshold = now - 12 * 3600_000;
   const next = Object.fromEntries(Object.entries(buffer || {}).filter(([, value]) => Number(value?.time || 0) >= threshold));
@@ -1024,15 +1024,18 @@ async function monitor(env) {
   // A previously detected external stream is refreshed separately.  Once it no
   // longer has a Holodex guest or a title match, it must leave the list rather
   // than remain forever because of its old persisted state.
-  // Cross-check only streams close to their scheduled start.  This is one
-  // videos.list request for up to 50 IDs, so it stays well within the free
-  // YouTube quota while removing a Holodex propagation delay from LIVE state.
-  const liveStatusIds = [...new Set([...favoriteVideos, ...holodexVideos]
+  // YouTube is the authority for a stream's terminal status. Holodex may keep
+  // a finished video in /live briefly, so check both fresh candidates and the
+  // persisted LIVE list for 24 hours after their start. This remains one
+  // videos.list request (up to 50 IDs) per monitor run.
+  const liveStatusIds = [...new Map([...previousAllLive, ...favoriteVideos, ...holodexVideos]
     .filter((item) => {
       const start = new Date(item.startTimeRaw).getTime();
-      return !item.isEnded && Number.isFinite(start) && start >= now - 3 * 3600_000 && start <= now + 30 * 60_000;
-    }).map((item) => item.videoId))].slice(0, 50);
-  const youtubeLiveStatus = await youtubeDetails(env, liveStatusIds);
+      return !item.isEnded && Number.isFinite(start) && start >= now - 24 * 3600_000 && start <= now + 30 * 60_000;
+    })
+    .sort((a, b) => Number(Boolean(b.isLive)) - Number(Boolean(a.isLive)) || new Date(a.startTimeRaw) - new Date(b.startTimeRaw))
+    .map((item) => [item.videoId, item])).keys()].slice(0, 50);
+  const youtubeLiveStatus = await youtubeDetails(env, liveStatusIds, { includeEnded: true });
   const all = merge([...holodexVideos, ...youtubeVideos, ...youtubeLiveStatus, ...guestRefresh.videos, ...favoriteVideos]).map((item) => enrichGuestSignals(item, master)).filter((item) => hasRosterConnection(item, globalIds) && shouldInclude(item, master));
   const specialRaw = await holodex(env, '/live', { org: 'Hololive', include: 'mentions,description', max_upcoming_hours: '336' });
   const specialCandidates = specialRaw.filter((raw) => isSpecial(raw.title, master.eventKeywords));
