@@ -217,10 +217,15 @@ async function importSheetMasters(env) {
   const eventKeywords = Object.fromEntries((events[0] || []).map((title, column) => [title, events.slice(1).map((row) => row[column]).filter(Boolean)]).filter(([title]) => title));
   return { favorites: favoriteMap, excludes: excludes.slice(1).map((row) => row[1]).filter(Boolean), excludeWords: words.map((row) => String(row[0] || '').toLowerCase()).filter(Boolean), eventKeywords, talentMap: Object.fromEntries(talent.slice(1).filter((row) => row[0] && row[1])), global: Object.fromEntries(global.slice(1).filter((row) => String(row[1] || '').startsWith('UC')).map((row) => [String(row[1]), { name: row[0] }])) };
 }
+function normalizeYoutubeHandle(value) {
+  const match = String(value || '').trim().match(/(?:youtube\.com\/)?@([a-z0-9._-]{3,})/i);
+  return match ? match[1].toLowerCase() : '';
+}
 function masterFromRows(channels, words = [], events = [], aliases = []) {
   const values = channels instanceof Map ? [...channels.entries()].map(([channel_id, item]) => ({ channel_id, name: item.name, is_global: item.isGlobal, is_favorite: item.isFavorite, is_excluded: item.isExcluded })) : channels;
-  const favorites = Object.fromEntries(values.filter((item) => Number(item.is_favorite)).map((item) => [item.channel_id, { name: item.name || '', priority: Number(item.priority || 0) }]));
-  const global = Object.fromEntries(values.filter((item) => Number(item.is_global)).map((item) => [item.channel_id, { name: item.name || '', priority: Number(item.priority || 0) }]));
+  const member = (item) => ({ name: item.name || '', priority: Number(item.priority || 0), handle: normalizeYoutubeHandle(item.youtube_handle || item.youtube_url), handleCheckedAt: Number(item.handle_checked_at || 0) });
+  const favorites = Object.fromEntries(values.filter((item) => Number(item.is_favorite)).map((item) => [item.channel_id, member(item)]));
+  const global = Object.fromEntries(values.filter((item) => Number(item.is_global)).map((item) => [item.channel_id, member(item)]));
   const eventKeywords = {};
   events.forEach((item) => { const category = Array.isArray(item) ? item.category : item.category; const keyword = Array.isArray(item) ? item.keyword : item.keyword; if (!category || !keyword) return; (eventKeywords[category] ||= []).push(keyword); });
   return { favorites, global, excludes: values.filter((item) => Number(item.is_excluded)).map((item) => item.channel_id), excludeWords: words.map((row) => String(Array.isArray(row) ? row[0] : row.keyword || row.setting_value || '').toLowerCase()).filter(Boolean), eventKeywords, talentMap: Object.fromEntries(aliases.filter((row) => (Array.isArray(row) ? row[0] : row.source_name) && (Array.isArray(row) ? row[1] : row.display_name)).map((row) => [Array.isArray(row) ? row[0] : row.source_name, Array.isArray(row) ? row[1] : row.display_name])) };
@@ -230,11 +235,38 @@ async function masters(env) {
     const existing = await queryAll(env, 'SELECT channel_id, name, is_global, is_favorite, is_excluded, priority FROM channels');
     if (!existing.length) await importSheetMasters(env);
     await bootstrapOperationalState(env);
-    const [channels, keywords, words, aliases] = await Promise.all([queryAll(env, 'SELECT channel_id, name, is_global, is_favorite, is_excluded, priority FROM channels ORDER BY is_favorite DESC, priority DESC, name'), queryAll(env, 'SELECT category, keyword FROM event_keywords'), queryAll(env, 'SELECT keyword FROM exclude_words'), queryAll(env, 'SELECT source_name, display_name FROM talent_aliases')]);
+    const [channels, keywords, words, aliases] = await Promise.all([queryAll(env, 'SELECT c.channel_id, c.name, c.is_global, c.is_favorite, c.is_excluded, c.priority, c.youtube_url, h.handle AS youtube_handle, h.updated_at AS handle_checked_at FROM channels c LEFT JOIN channel_handles h ON h.channel_id=c.channel_id ORDER BY c.is_favorite DESC, c.priority DESC, c.name'), queryAll(env, 'SELECT category, keyword FROM event_keywords'), queryAll(env, 'SELECT keyword FROM exclude_words'), queryAll(env, 'SELECT source_name, display_name FROM talent_aliases')]);
     return masterFromRows(channels, words, keywords, aliases);
   }
   // Allows a safe deploy before the D1 migration has been applied.
   return importSheetMasters(env);
+}
+async function hydrateYoutubeHandles(env, master) {
+  if (!env.YOUTUBE_API_KEY || !await operationalReady(env)) return;
+  const now = Date.now();
+  const missing = Object.keys(master.global).filter((channelId) => !master.global[channelId]?.handle && now - Number(master.global[channelId]?.handleCheckedAt || 0) > 7 * 86400000);
+  if (!missing.length) return;
+  const chunks = Array.from({ length: Math.ceil(missing.length / 50) }, (_, index) => missing.slice(index * 50, index * 50 + 50));
+  const resolved = new Map();
+  await Promise.all(chunks.map(async (chunk) => {
+    try {
+      const query = new URLSearchParams({ part: 'snippet', id: chunk.join(','), key: env.YOUTUBE_API_KEY });
+      const response = await fetch(`https://www.googleapis.com/youtube/v3/channels?${query}`);
+      if (!response.ok) throw new Error(`YouTube channel lookup failed: ${response.status}`);
+      for (const channel of (await response.json()).items || []) {
+        const handle = normalizeYoutubeHandle(channel.snippet?.customUrl);
+        if (handle) resolved.set(channel.id, handle);
+      }
+    } catch (error) { console.warn('YouTube handle lookup failed.', error.message || error); }
+  }));
+  await env.DB.batch(missing.map((channelId) => env.DB.prepare('INSERT INTO channel_handles (channel_id, handle, updated_at) VALUES (?, ?, ?) ON CONFLICT(channel_id) DO UPDATE SET handle=excluded.handle, updated_at=excluded.updated_at').bind(channelId, resolved.get(channelId) || '', now)));
+  missing.forEach((channelId) => {
+    const handle = resolved.get(channelId) || '';
+    if (master.global[channelId]) master.global[channelId].handle = handle;
+    if (master.favorites[channelId]) master.favorites[channelId].handle = handle;
+    if (master.global[channelId]) master.global[channelId].handleCheckedAt = now;
+    if (master.favorites[channelId]) master.favorites[channelId].handleCheckedAt = now;
+  });
 }
 async function updateFavorite(env, channelId, isFavorite) {
   if (await operationalReady(env)) {
@@ -330,31 +362,37 @@ async function refreshTrackedGuests(env, states, globalIds, talentMap, cursors) 
   });
   return { videos, cursors: { live: live.nextCursor, upcoming: upcoming.nextCursor, ended: ended.nextCursor } };
 }
-function primaryTarget(item, master) { const ids = new Set(Object.keys(master.favorites)); return Boolean(ids.has(item.channelId) || item.isSpecial || isSpecial(item.title, master.eventKeywords) || (item.mentions || []).some((mention) => ids.has(mention.id))); }
+function primaryTarget(item, master) { const ids = new Set(Object.keys(master.favorites)); return Boolean(ids.has(item.channelId) || item.isSpecial || isSpecial(item.title, master.eventKeywords) || (item.mentions || []).some((mention) => ids.has(mention.id)) || (item.detectedMemberIds || []).some((id) => ids.has(id))); }
 function target(item, master) { if (primaryTarget(item, master)) return true; return Object.values(master.favorites).some((favorite) => favorite.name && item.title?.includes(favorite.name)); }
 function shouldInclude(item, master) { if (Object.hasOwn(master.favorites, item.channelId)) return true; const title = normalizeTitle(item.title); if ((master.excludeWords || []).some((word) => title.includes(normalizeTitle(word)))) return false; return !(master.excludes || []).includes(item.channelId); }
 function isWithin72Hours(value, now) { const diff = new Date(value).getTime() - now; return diff >= -3 * 3600_000 && diff <= 72 * 3600_000; }
 function normalizeTitle(value) { return String(value || '').normalize('NFKC').replace(/\s+/g, ' ').trim().toLowerCase(); }
+function descriptionHandles(value) {
+  const handles = new Set();
+  for (const match of String(value || '').matchAll(/(^|[^a-z0-9._-])@([a-z0-9._-]{3,})/gi)) handles.add(match[2].toLowerCase());
+  return handles;
+}
 function enrichGuestSignals(item, master) {
   const roster = master.global || {};
-  const mentions = new Map((item.mentions || []).filter((mention) => mention?.id).map((mention) => [mention.id, mention]));
-  const titleAndDescription = normalizeTitle(`${item.title || ''}\n${item.description || ''}`);
-  const rawDescription = String(item.description || '').toLowerCase();
-  let inferred = false;
+  // Title/description inference only decides whether an outside stream matters.
+  // It must never become a displayed guest: event titles and credits often list
+  // many members who are not actually participating in the stream.
+  const mentions = new Map((item.mentions || []).filter((mention) => mention?.id && !mention.inferred_from).map((mention) => [mention.id, mention]));
+  const normalizedTitle = normalizeTitle(item.title);
+  const handles = descriptionHandles(item.description);
+  const detectedMemberIds = new Set(item.detectedMemberIds || []);
   Object.entries(roster).forEach(([channelId, channel]) => {
     if (channelId === item.channelId || mentions.has(channelId)) return;
     const name = String(channel?.name || '').trim();
-    const mentionedByName = name.length >= 3 && titleAndDescription.includes(normalizeTitle(name));
-    const mentionedByChannelUrl = rawDescription.includes(channelId.toLowerCase());
-    if (mentionedByName || mentionedByChannelUrl) {
-      mentions.set(channelId, { id: channelId, name, inferred_from: mentionedByName ? 'title_or_description' : 'description_channel_url' });
-      inferred = true;
-    }
+    const mentionedByTitle = name.length >= 3 && normalizedTitle.includes(normalizeTitle(name));
+    const mentionedByDescriptionHandle = Boolean(channel?.handle && handles.has(channel.handle));
+    if (mentionedByTitle || mentionedByDescriptionHandle) detectedMemberIds.add(channelId);
   });
   const allMentions = [...mentions.values()];
   const guests = allMentions.filter((mention) => mention.id !== item.channelId && roster[mention.id]).map((mention) => ({ name: String(roster[mention.id]?.name || normalizedTalentName(mention.name, master.talentMap)).trim(), icon: mention.photo || '' })).filter((guest, index, list) => guest.name && list.findIndex((entry) => entry.name === guest.name) === index);
-  return { ...item, mentions: allMentions, guests, mentionsKnown: Boolean(item.mentionsKnown || inferred) };
+  return { ...item, mentions: allMentions, guests, detectedMemberIds: [...detectedMemberIds], mentionsKnown: Boolean(item.mentionsKnown) };
 }
+function hasRosterConnection(item, globalIds) { return globalIds.has(item.channelId) || (item.guests || []).length > 0 || (item.detectedMemberIds || []).length > 0; }
 function isHolostarsChannel(channel) { return /holostars|ホロスターズ/i.test(`${channel?.org || ''} ${channel?.group || ''}`); }
 async function allowedExternalChannelIds(env, rawVideos, globalIds) {
   const externalIds = [...new Set(rawVideos.map((raw) => raw.channel?.id).filter((id) => id && !globalIds.has(id)))];
@@ -515,7 +553,7 @@ const mentionDisplayName = (mention, master) => String(
 
 function notificationTarget(item, master) {
   const favoriteIds = new Set(Object.keys(master.favorites));
-  return Boolean(item.isSpecial || favoriteIds.has(item.channelId) || (item.mentions || []).some((mention) => favoriteIds.has(mention.id)));
+  return Boolean(item.isSpecial || favoriteIds.has(item.channelId) || (item.mentions || []).some((mention) => favoriteIds.has(mention.id)) || (item.detectedMemberIds || []).some((id) => favoriteIds.has(id)));
 }
 
 function shouldSendChanged(item, now) {
@@ -794,6 +832,8 @@ function imminentReason(item, master) {
   if (item.isSpecial || isSpecial(item.title, master.eventKeywords)) reasons.push('◆記念配信');
   const guests = (item.mentions || []).filter((mention) => favoriteIds.has(mention.id) && mention.id !== item.channelId);
   guests.forEach((guest) => reasons.push(`●ゲスト(連携:${mentionDisplayName(guest, master)})`));
+  const inferredGuests = (item.detectedMemberIds || []).filter((id) => favoriteIds.has(id) && id !== item.channelId);
+  inferredGuests.forEach((id) => reasons.push(`●関連メンバー(タイトル・概要欄:${master.favorites[id]?.name || master.global[id]?.name || id})`));
   const ownerName = master.favorites[item.channelId]?.name || '';
   const namedGuest = Object.values(master.favorites).map(({ name }) => name).find((name) => name && name !== ownerName && item.title.includes(name));
   if (namedGuest && !guests.some((guest) => guest.name === namedGuest)) reasons.push(`●ゲスト(タイトル:${namedGuest})`);
@@ -806,7 +846,7 @@ async function notifyJustBeforeStart(env) {
   const isScheduledWindow = (minute >= 29 && minute <= 30) || minute >= 59 || minute === 0;
   try {
     const settings = await notificationSettings(env); if (!settings.notifications_enabled || !settings.notify_imminent) return;
-    const master = await masters(env); const favoriteIds = Object.keys(master.favorites); const globalIds = new Set(Object.keys(master.global));
+    const master = await masters(env); await hydrateYoutubeHandles(env, master); const favoriteIds = Object.keys(master.favorites); const globalIds = new Set(Object.keys(master.global));
     const [history, favoriteRaw, specialRaw] = await Promise.all([
       getState(env, 'imminent_notification_history', {}),
       favoriteIds.length ? holodex(env, '/users/live', { channels: favoriteIds.join(',') }) : [],
@@ -815,7 +855,7 @@ async function notifyJustBeforeStart(env) {
     const cleanedHistory = Object.fromEntries(Object.entries(history).filter(([, value]) => Number(value?.time || 0) > now - 24 * 3600_000));
     const specialCandidates = specialRaw.filter((raw) => isSpecial(raw.title, master.eventKeywords));
     const allowedExternalIds = await allowedExternalChannelIds(env, specialCandidates, globalIds);
-    const specials = specialCandidates.filter((raw) => globalIds.has(raw.channel?.id) || allowedExternalIds.has(raw.channel?.id)).map((raw) => ({ ...enrichGuestSignals(video(raw, globalIds, master.talentMap), master), isSpecial: true })).filter((item) => globalIds.has(item.channelId) || item.guests.length);
+    const specials = specialCandidates.filter((raw) => globalIds.has(raw.channel?.id) || allowedExternalIds.has(raw.channel?.id)).map((raw) => ({ ...enrichGuestSignals(video(raw, globalIds, master.talentMap), master), isSpecial: true })).filter((item) => hasRosterConnection(item, globalIds));
     const candidates = merge([...favoriteRaw.map((raw) => enrichGuestSignals(video(raw, globalIds, master.talentMap), master)), ...specials]).sort((left, right) => new Date(left.startTimeRaw) - new Date(right.startTimeRaw));
     const early = []; const scheduled = [];
     candidates.forEach((item) => {
@@ -854,14 +894,14 @@ async function monitor(env) {
   }
   const lastRun = runtime.lastRun || 0;
   if (now - Number(lastRun || 0) < monitorInterval(new Date(now))) return { ran: false, discovered: 0 };
-  const master = await masters(env); const ids = Object.keys(master.global); const globalIds = new Set(ids);
+  const master = await masters(env); await hydrateYoutubeHandles(env, master); const ids = Object.keys(master.global); const globalIds = new Set(ids);
   const relationalStore = await operationalReady(env);
   const chunks = Array.from({ length: Math.ceil(ids.length / 50) }, (_, index) => ids.slice(index * 50, index * 50 + 50));
   const own = await Promise.all(chunks.map((chunk) => holodex(env, '/live', { channels: chunk.join(','), include: 'mentions,description', max_upcoming_hours: '336' })));
   const external = await holodex(env, '/live', { org: 'Hololive', include: 'mentions,description', limit: '50', max_upcoming_hours: '336' });
   const allowedExternalIds = await allowedExternalChannelIds(env, external, globalIds);
   const permittedExternal = external.filter((raw) => globalIds.has(raw.channel?.id) || allowedExternalIds.has(raw.channel?.id));
-  const holodexVideos = [...own.flat(), ...permittedExternal].map((raw) => enrichGuestSignals(video(raw, globalIds, master.talentMap), master)).filter((item) => (globalIds.has(item.channelId) || item.guests.length) && shouldInclude(item, master));
+  const holodexVideos = [...own.flat(), ...permittedExternal].map((raw) => enrichGuestSignals(video(raw, globalIds, master.talentMap), master)).filter((item) => hasRosterConnection(item, globalIds) && shouldInclude(item, master));
   const [dbAllLive, dbAllUpcoming, dbAllEnded, dbUiLive, dbUiUpcoming, dbUiEnded, dbNotificationHistory, legacyAllLive, legacyAllUpcoming, legacyAllEnded, legacyUiLive, legacyUiUpcoming, legacyUiEnded, legacyNotificationHistory, viewerBuffer, monitorError] = await Promise.all([
     readVideoState(env, 'all', 'live'), readVideoState(env, 'all', 'upcoming'), readVideoState(env, 'all', 'ended'), readVideoState(env, 'ui', 'live'), readVideoState(env, 'ui', 'upcoming'), readVideoState(env, 'ui', 'ended'), readNotificationHistory(env),
     getState(env, 'all_live', []), getState(env, 'all_upcoming', []), getState(env, 'all_ended', []), getState(env, 'ui_live', []), getState(env, 'ui_upcoming', []), getState(env, 'ui_ended', []), getState(env, 'notification_history', {}), getState(env, 'viewer_buffer', {}), getState(env, 'monitor_error', null)
@@ -896,7 +936,7 @@ async function monitor(env) {
   const specialRaw = await holodex(env, '/live', { org: 'Hololive', include: 'mentions,description', max_upcoming_hours: '336' });
   const specialCandidates = specialRaw.filter((raw) => isSpecial(raw.title, master.eventKeywords));
   const allowedSpecialExternalIds = await allowedExternalChannelIds(env, specialCandidates, globalIds);
-  const specials = specialCandidates.filter((raw) => globalIds.has(raw.channel?.id) || allowedSpecialExternalIds.has(raw.channel?.id)).map((raw) => ({ ...enrichGuestSignals(video(raw, globalIds, master.talentMap), master), isSpecial: true })).filter((item) => globalIds.has(item.channelId) || item.guests.length);
+  const specials = specialCandidates.filter((raw) => globalIds.has(raw.channel?.id) || allowedSpecialExternalIds.has(raw.channel?.id)).map((raw) => ({ ...enrichGuestSignals(video(raw, globalIds, master.talentMap), master), isSpecial: true })).filter((item) => hasRosterConnection(item, globalIds));
   const favorites = merge([...favRaw.map((raw) => enrichGuestSignals(video(raw, globalIds, master.talentMap), master)), ...specials, ...all.filter((item) => primaryTarget(item, master))]);
   const keep = now - 90 * 86400000;
   const favoriteIds = new Set(Object.keys(master.favorites));
