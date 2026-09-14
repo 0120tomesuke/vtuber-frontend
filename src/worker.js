@@ -1228,8 +1228,9 @@ async function api(request, env, url) {
     const [legacyLive, legacyUpcoming, legacyEnded] = dbLive === null ? await Promise.all([getState(env, all ? 'all_live' : 'ui_live', []), getState(env, all ? 'all_upcoming' : 'ui_upcoming', []), getState(env, all ? 'all_ended' : 'ui_ended', [])]) : [[], [], []];
     const live = dbLive ?? legacyLive; const upcoming = dbUpcoming ?? legacyUpcoming; const ended = dbEnded ?? legacyEnded;
     const videos = all ? [...live, ...upcoming] : [...live, ...upcoming, ...ended];
-    if (!all && monitorError?.message) videos.unshift({ isSystemError: true, message: monitorError.message, timestamp: Date.now() });
-    return json({ videos, live, upcoming, ended, favorites: Object.keys(master.favorites), ...(all ? { lastUpdate: new Date().toISOString() } : {}) });
+    // Monitoring failures are response metadata, not pseudo-video rows. This
+    // keeps the UI warning visible instead of having its data sanitizer drop it.
+    return json({ videos, live, upcoming, ended, favorites: Object.keys(master.favorites), monitorError: monitorError?.message ? monitorError : null, ...(all ? { lastUpdate: new Date().toISOString() } : {}) });
   }
   const viewerMatch = /^\/api\/videos\/([^/]+)\/viewers$/.exec(url.pathname);
   if (request.method === 'GET' && viewerMatch) {

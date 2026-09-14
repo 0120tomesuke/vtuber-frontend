@@ -224,6 +224,8 @@
     </div>
   </header>
 
+  <div id="monitor-warning" class="monitor-warning" role="alert" style="display:none"></div>
+
   <div id="content">
     <div class="tab-container" id="tab-container">
       <div id="scheduled-section"></div>
@@ -475,6 +477,16 @@
     if (popup) popup.style.display = "none";
   }
 
+  function showMonitorWarning(...responses) {
+    const warning = responses.map((response) => response?.monitorError).find((value) => value?.message);
+    const root = document.getElementById("monitor-warning");
+    if (!root) return;
+    if (!warning) { root.style.display = "none"; root.textContent = ""; return; }
+    const at = warning.at ? new Date(warning.at).toLocaleString("ja-JP") : "時刻不明";
+    root.textContent = `⚠️ 配信情報の最新取得に失敗しました（${at}）。表示は前回取得分です。${warning.message}`;
+    root.style.display = "block";
+  }
+
   /* ==========================================
      1. UI制御（メニュー・ハート・ローディング・リトライUI）
      ========================================== */
@@ -715,6 +727,11 @@
       const results = await Promise.allSettled([favPromise, allPromise]);
       const favResult = results[0];
       const allResult = results[1];
+
+      showMonitorWarning(
+        favResult.status === "fulfilled" ? favResult.value : null,
+        allResult.status === "fulfilled" ? allResult.value : null
+      );
 
       if (favResult.status === "rejected") {
         console.error("❌ FAVデータの取得に失敗しました:", favResult.reason?.message || favResult.reason);
