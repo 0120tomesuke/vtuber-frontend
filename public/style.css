@@ -1301,7 +1301,31 @@ body.menu-open #side-menu {
 .admin-error { color: #fca5a5; }
 @media (max-width: 600px) { .admin-panel { margin: 0; padding: 16px; } .admin-list > div { display: block; } }
 .viewer-chart-btn { padding: 2px 5px; border: 1px solid currentColor; border-radius: 5px; background: transparent; color: inherit; font-size: 11px; cursor: pointer; }
-.viewer-chart { display: block; width: 100%; min-height: 180px; margin: 12px 0; border-radius: 8px; background: #0f172a; }
+.viewer-chart { display: block; width: 100%; height: clamp(150px, 26vw, 200px); margin: 10px 0; border-radius: 8px; background: #0f172a; }
+.viewer-chart-grid line { stroke: rgba(148, 163, 184, .28); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.viewer-chart-grid text { fill: #94a3b8; font-size: 17px; font-weight: 600; }
+.viewer-chart-line { fill: none; stroke: #22d3ee; stroke-width: 3; vector-effect: non-scaling-stroke; stroke-linejoin: round; stroke-linecap: round; }
+.viewer-chart-peak circle { fill: #f43f5e; stroke: #fff; stroke-width: 2; vector-effect: non-scaling-stroke; }
+.viewer-chart-peak text { fill: #fda4af; font-size: 18px; font-weight: 800; paint-order: stroke; stroke: #0f172a; stroke-width: 5; stroke-linejoin: round; }
+
+/* 同接グラフは管理画面とは別の、コンパクトな中央ダイアログにする。 */
+#viewer-modal { align-items: center; justify-content: center; }
+#viewer-modal .admin-panel {
+  width: min(580px, calc(100vw - 32px));
+  max-width: 580px;
+  max-height: calc(100dvh - 32px);
+  margin: 0;
+  padding: 18px;
+  overflow: auto;
+}
+#viewer-content h3 { margin: 0 28px 6px 0; font-size: 16px; line-height: 1.4; }
+#viewer-content p { margin: 6px 0; font-size: 12px; line-height: 1.5; color: #cbd5e1; }
+@media (max-width: 600px) {
+  #viewer-modal { padding: 12px; }
+  #viewer-modal .admin-panel { width: calc(100vw - 24px); max-height: calc(100dvh - 24px); padding: 14px; }
+  #viewer-content h3 { font-size: 15px; }
+  .viewer-chart { height: clamp(105px, 30vw, 150px); margin: 8px 0; }
+}
 
 /* Archived-stream statistics are metadata, not an alert.  Keep them clear of
    the thumbnail and visually distinct from the red live-viewer badge. */
