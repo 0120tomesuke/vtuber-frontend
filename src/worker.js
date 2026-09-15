@@ -1302,10 +1302,14 @@ async function api(request, env, url) {
   if (url.pathname === '/api/videos' || legacyAll) {
     const all = url.searchParams.get('mode') === 'all'; const master = await masters(env);
     const scope = all ? 'all' : 'ui';
-    const [dbLive, dbUpcoming, dbEnded, monitorError, runtime] = await Promise.all([readVideoState(env, scope, 'live'), readVideoState(env, scope, 'upcoming'), all ? Promise.resolve([]) : readVideoState(env, scope, 'ended', { stateUpdatedSince: endedStateSince() }), getState(env, 'monitor_error', null), getState(env, 'monitor_runtime', {})]);
+    // ALL view used to skip this read as a D1 optimisation, but that made its
+    // completed tab permanently empty even though the all-scope ended cards
+    // were being stored correctly. The client now refreshes only manually, so
+    // returning the recent retained cards is both correct and inexpensive.
+    const [dbLive, dbUpcoming, dbEnded, monitorError, runtime] = await Promise.all([readVideoState(env, scope, 'live'), readVideoState(env, scope, 'upcoming'), readVideoState(env, scope, 'ended', { stateUpdatedSince: endedStateSince() }), getState(env, 'monitor_error', null), getState(env, 'monitor_runtime', {})]);
     const [legacyLive, legacyUpcoming, legacyEnded] = dbLive === null ? await Promise.all([getState(env, all ? 'all_live' : 'ui_live', []), getState(env, all ? 'all_upcoming' : 'ui_upcoming', []), getState(env, all ? 'all_ended' : 'ui_ended', [])]) : [[], [], []];
     const live = applyLiveSnapshot(dbLive ?? legacyLive, runtime?.liveSnapshot); const upcoming = dbUpcoming ?? legacyUpcoming; const ended = dbEnded ?? legacyEnded;
-    const videos = all ? [...live, ...upcoming] : [...live, ...upcoming, ...ended];
+    const videos = [...live, ...upcoming, ...ended];
     // Monitoring failures are response metadata, not pseudo-video rows. This
     // keeps the UI warning visible instead of having its data sanitizer drop it.
     return json({ videos, live, upcoming, ended, favorites: Object.keys(master.favorites), monitorError: monitorError?.message ? monitorError : null, monitorLastRun: Number(runtime?.lastRun || 0) || null, monitorIntervalMs: monitorInterval(new Date()), ...(all ? { lastUpdate: new Date().toISOString() } : {}) });
