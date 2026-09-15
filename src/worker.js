@@ -449,13 +449,15 @@ function changedFields(item, previous) {
 function isoDurationSeconds(value) { const match = /^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/.exec(value || ''); return match ? Number(match[1] || 0) * 3600 + Number(match[2] || 0) * 60 + Number(match[3] || 0) : 0; }
 function tokyoHour(date = new Date()) { return Number(new Intl.DateTimeFormat('en-US', { timeZone: TOKYO, hour: '2-digit', hourCycle: 'h23' }).format(date)); }
 function youtubeInterval(date = new Date()) { return monitorInterval(date); }
-// Match the proven GAS cadence outside prime time. The user-priority
-// 15:00–24:00 JST window receives a full one-minute reconciliation. The
-// queue also runs each minute so the two-minute-before start alert is precise.
+// Keep the free-tier budget focused where it matters most: prime time is
+// every minute, daytime is five minutes, and night is deliberately sparse.
+// The queue also runs each minute so the two-minute-before start alert stays
+// precise in every time window.
 function monitorInterval(date = new Date()) {
   const hour = tokyoHour(date);
-  if (hour >= 2 && hour < 7) return 50 * 60_000;
-  if (hour < 2 || hour < 15) return 7.5 * 60_000;
+  if (hour >= 2 && hour < 7) return 30 * 60_000;
+  if (hour < 2) return 10 * 60_000;
+  if (hour < 17) return 5 * 60_000;
   return 55_000;
 }
 async function mapLimit(values, limit, fn) { let cursor = 0; await Promise.all(Array.from({ length: Math.min(limit, values.length) }, async () => { while (cursor < values.length) { const index = cursor++; await fn(values[index]); } })); }
@@ -692,7 +694,7 @@ function notificationHtml(items, master) {
     const dateWithYear = new Date(Date.UTC(new Date().getFullYear(), month - 1, day));
     const byHour = new Map(); dateItems.forEach((item) => { const hour = formatHour(item.startTimeRaw); byHour.set(hour, [...(byHour.get(hour) || []), item]); });
     return `<div style="background:#ff9800;color:#fff;padding:8px 12px;margin:24px 0 12px;border-radius:6px;font-size:16px;font-weight:bold;display:inline-block">📅 ${date}（${weekday[dateWithYear.getUTCDay()]}）</div>${[...byHour.entries()].sort(([a], [b]) => Number(a) - Number(b)).map(([hour, hourItems]) => `<div style="border-left:4px solid #4da3ff;padding-left:8px;margin:16px 0 12px;font-size:15px;font-weight:bold;color:#1976d2">${hour}:00 ～</div>${hourItems.map((item) => notificationCard(item, master)).join('')}`).join('')}`;
-  }).join('')}<div style="text-align:center;margin-top:20px;padding-top:20px;border-top:1px solid #eee;font-size:12px;color:#999">※このメールは自動送信されています。</div></div>`;
+  }).join('')}<div style="margin-top:20px;padding-top:20px;border-top:1px solid #eee;font-size:12px;color:#999">※このメールは自動送信されています。<span style="float:right;color:#78909c">送信経路: Cloudflare Worker</span></div></div>`;
 }
 
 async function resendSend(env, payload) {
@@ -961,7 +963,7 @@ function startNotificationHtml(items) {
   [...items].sort((left, right) => new Date(left.startTimeRaw) - new Date(right.startTimeRaw)).forEach((item) => {
     const key = format(item.startTimeRaw); grouped.set(key, [...(grouped.get(key) || []), item]);
   });
-  return `<div style="font-family:Arial,sans-serif;max-width:560px;margin:auto">${[...grouped.entries()].map(([time, videos]) => `<div style="margin-top:20px;margin-bottom:10px"><span style="background:#00e6ff;border-left:6px solid #00acc1;padding:6px 12px;border-radius:6px;font-size:18px;font-weight:bold;color:#000">🕒 ${html(time)} 開始</span></div><div style="display:flex;flex-wrap:wrap;gap:10px;background:rgba(0,230,255,.05);padding:12px;border-radius:12px">${videos.map((item) => `<a href="${html(item.videoUrl)}" target="_blank" style="text-decoration:none;color:#000;width:48%;min-width:160px"><div style="background:#fff;border-radius:10px;overflow:hidden;border:1px solid #ddd;height:100%"><img src="https://i.ytimg.com/vi/${html(item.videoId)}/mqdefault.jpg" alt="" style="width:100%;display:block"><div style="padding:8px"><div style="font-size:12px;font-weight:bold;line-height:1.3;height:2.6em;overflow:hidden;margin-bottom:4px">${html(item.title)}</div><div style="font-size:11px;color:#666;margin-bottom:4px">${html(item.channelTitle)}</div><div style="font-size:10px;color:#d32f2f;background:#fff0f0;padding:2px 4px;border-radius:4px;display:inline-block">${html(item.passReason || '')}</div></div></div></a>`).join('')}</div>`).join('')}<p style="color:#999;font-size:12px">※このメールは自動送信されています。</p></div>`;
+  return `<div style="font-family:Arial,sans-serif;max-width:560px;margin:auto">${[...grouped.entries()].map(([time, videos]) => `<div style="margin-top:20px;margin-bottom:10px"><span style="background:#00e6ff;border-left:6px solid #00acc1;padding:6px 12px;border-radius:6px;font-size:18px;font-weight:bold;color:#000">🕒 ${html(time)} 開始</span></div><div style="display:flex;flex-wrap:wrap;gap:10px;background:rgba(0,230,255,.05);padding:12px;border-radius:12px">${videos.map((item) => `<a href="${html(item.videoUrl)}" target="_blank" style="text-decoration:none;color:#000;width:48%;min-width:160px"><div style="background:#fff;border-radius:10px;overflow:hidden;border:1px solid #ddd;height:100%"><img src="https://i.ytimg.com/vi/${html(item.videoId)}/mqdefault.jpg" alt="" style="width:100%;display:block"><div style="padding:8px"><div style="font-size:12px;font-weight:bold;line-height:1.3;height:2.6em;overflow:hidden;margin-bottom:4px">${html(item.title)}</div><div style="font-size:11px;color:#666;margin-bottom:4px">${html(item.channelTitle)}</div><div style="font-size:10px;color:#d32f2f;background:#fff0f0;padding:2px 4px;border-radius:4px;display:inline-block">${html(item.passReason || '')}</div></div></div></a>`).join('')}</div>`).join('')}<p style="color:#999;font-size:12px">※このメールは自動送信されています。<span style="float:right;color:#78909c">送信経路: Cloudflare Worker</span></p></div>`;
 }
 async function sendStartEmail(env, subject, items, senderName) {
   const recipient = (await notificationSettings(env)).notification_email || env.NOTIFICATION_EMAIL;
