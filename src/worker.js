@@ -847,7 +847,11 @@ async function sendMail(env, { senderName, recipient, subject, html: htmlBody })
   }
   if (mode === 'resend') return deliverMail(resendReady(env) ? [{ name: 'resend', send: resend }] : []);
   if (mode === 'gmail') return deliverMail(gmailReady(env) ? [{ name: 'gmail', send: gmail }] : []);
-  // Default and explicit "gas": retain the permanent relay until cutover.
+  if (mode === 'gas') {
+    if (!gasRelayReady(env)) throw new Error('GAS mail relay is not configured. Set GAS_MAIL_RELAY_URL and GAS_MAIL_RELAY_TOKEN.');
+    return deliverMail([{ name: 'gas', send: gas }]);
+  }
+  // Default: retain the permanent relay until cutover.
   if (gasRelayReady(env)) return deliverMail([{ name: 'gas', send: gas }]);
   if (gmailReady(env)) return deliverMail([{ name: 'gmail', send: gmail }]);
   return deliverMail(resendReady(env) ? [{ name: 'resend', send: resend }] : []);

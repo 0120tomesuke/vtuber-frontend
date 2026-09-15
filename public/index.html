@@ -254,6 +254,7 @@
   let isMenuOpen = false;
   let currentRecentSort = 'time'; 
   let currentLiveSort = 'time';
+  let monitorWarningDismissed = false;
 
   // プログレッシブ制御用フラグ（状態遷移の管理）
   let isAllLoaded = false;       
@@ -481,10 +482,26 @@
     const warning = responses.map((response) => response?.monitorError).find((value) => value?.message);
     const root = document.getElementById("monitor-warning");
     if (!root) return;
+    const show = (message) => {
+      if (monitorWarningDismissed) { root.style.display = 'none'; return; }
+      root.replaceChildren();
+      const text = document.createElement('span');
+      text.textContent = message;
+      const close = document.createElement('button');
+      close.type = 'button';
+      close.className = 'monitor-warning-close';
+      close.setAttribute('aria-label', '監視更新の警告を閉じる');
+      close.textContent = '×';
+      close.addEventListener('click', () => {
+        monitorWarningDismissed = true;
+        root.style.display = 'none';
+      });
+      root.append(text, close);
+      root.style.display = 'block';
+    };
     if (warning) {
       const at = warning.at ? new Date(warning.at).toLocaleString("ja-JP") : "時刻不明";
-      root.textContent = `⚠️ 配信情報の最新取得に失敗しました（${at}）。表示は前回取得分です。${warning.message}`;
-      root.style.display = "block";
+      show(`⚠️ 配信情報の最新取得に失敗しました（${at}）。表示は前回取得分です。${warning.message}`);
       return;
     }
     const runtime = responses.map((response) => ({ lastRun: Number(response?.monitorLastRun || 0), interval: Number(response?.monitorIntervalMs || 0) })).filter(({ lastRun }) => lastRun);
@@ -492,8 +509,7 @@
     const staleAfter = Math.max((latest.interval || 60_000) * 2 + 60_000, 3 * 60_000);
     if (!latest.lastRun || Date.now() - latest.lastRun > staleAfter) {
       const at = latest.lastRun ? new Date(latest.lastRun).toLocaleString("ja-JP") : "時刻不明";
-      root.textContent = `⚠️ 監視更新が止まっている可能性があります（最終成功: ${at}）。表示は前回取得分です。`;
-      root.style.display = "block";
+      show(`⚠️ 監視更新が止まっている可能性があります（最終成功: ${at}）。表示は前回取得分です。`);
       return;
     }
     root.style.display = "none";
@@ -790,6 +806,8 @@
       console.warn("⚠️ すでに通信処理が実行中のため、重複呼び出しをスキップしました。");
       return;
     }
+
+    if (forceRefresh) monitorWarningDismissed = false;
 
     isFetchInProgress = true;
     showLoading();
