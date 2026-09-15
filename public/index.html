@@ -1186,28 +1186,46 @@
       const samples = data.samples || [];
       if (!samples.length) { root.innerHTML = `<h3>${escapeAdmin(title)}</h3><p>まだ時系列データはありません。D1移行後の配信から5分ごとに記録されます。</p>`; return; }
       const values = samples.map((item) => Number(item.viewers || 0));
-      const max = Math.max(...values, 1); const width = 720; const height = 240;
-      const plot = { left: 58, right: 16, top: 18, bottom: 38 };
+      const max = Math.max(...values, 1); const width = 720; const height = 260;
+      const plot = { left: 76, right: 18, top: 24, bottom: 46 };
       const plotWidth = width - plot.left - plot.right; const plotHeight = height - plot.top - plot.bottom;
       const magnitude = 10 ** Math.floor(Math.log10(max)); const scaled = max / magnitude;
       const yMax = (scaled <= 2 ? 2 : scaled <= 5 ? 5 : 10) * magnitude;
       const xFor = (index) => plot.left + index * plotWidth / Math.max(samples.length - 1, 1);
       const yFor = (value) => plot.top + plotHeight - value / yMax * plotHeight;
       const points = values.map((value, index) => `${xFor(index).toFixed(1)},${yFor(value).toFixed(1)}`).join(' ');
+      const areaPoints = `${plot.left},${height - plot.bottom} ${points} ${width - plot.right},${height - plot.bottom}`;
+      const timeLabel = (item) => new Intl.DateTimeFormat('ja-JP', { hour: '2-digit', minute: '2-digit' }).format(new Date(item.observed_at));
       const yGrid = Array.from({ length: 5 }, (_, index) => {
         const value = yMax * (4 - index) / 4; const y = yFor(value).toFixed(1);
         return `<line x1="${plot.left}" y1="${y}" x2="${width - plot.right}" y2="${y}"/><text x="${plot.left - 8}" y="${Number(y) + 4}" text-anchor="end">${Math.round(value).toLocaleString()}</text>`;
       }).join('');
-      const xIndexes = [...new Set([0, Math.floor((samples.length - 1) / 2), samples.length - 1])];
-      const timeLabel = (item) => new Intl.DateTimeFormat('ja-JP', { hour: '2-digit', minute: '2-digit' }).format(new Date(item.observed_at));
+      const tickCount = Math.min(5, samples.length);
+      const xIndexes = tickCount === 1 ? [0] : [...new Set(Array.from({ length: tickCount }, (_, index) => Math.round(index * (samples.length - 1) / (tickCount - 1))))];
       const xGrid = xIndexes.map((index) => {
         const x = xFor(index).toFixed(1); const anchor = index === 0 ? 'start' : index === samples.length - 1 ? 'end' : 'middle';
         return `<line x1="${x}" y1="${plot.top}" x2="${x}" y2="${height - plot.bottom}"/><text x="${x}" y="${height - 12}" text-anchor="${anchor}">${timeLabel(samples[index])}</text>`;
       }).join('');
       const peakIndex = values.indexOf(max); const peakX = xFor(peakIndex); const peakY = yFor(max);
-      const peakAnchor = peakX > width - 108 ? 'end' : 'start'; const peakTextX = peakX + (peakAnchor === 'end' ? -8 : 8);
+      const peakTime = timeLabel(samples[peakIndex]);
+      const peakAnchor = peakX > width - 178 ? 'end' : 'start'; const peakTextX = peakX + (peakAnchor === 'end' ? -9 : 9);
       const peakTextY = Math.max(peakY - 10, 14);
-      root.innerHTML = `<h3>${escapeAdmin(title)}</h3><p>${samples.length}点 / 最大同接 ${max.toLocaleString()}</p><svg class="viewer-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="同接推移（時刻と同接数の目盛り付き）"><g class="viewer-chart-grid">${yGrid}${xGrid}</g><polyline class="viewer-chart-line" points="${points}"/><g class="viewer-chart-peak"><circle cx="${peakX}" cy="${peakY}" r="5"/><text x="${peakTextX}" y="${peakTextY}" text-anchor="${peakAnchor}">最大 ${max.toLocaleString()}</text></g></svg><p>${new Date(samples[0].observed_at).toLocaleString('ja-JP')} 〜 ${new Date(samples.at(-1).observed_at).toLocaleString('ja-JP')}</p>`;
+      const samplePoints = values.map((value, index) => `<circle class="viewer-chart-sample" data-index="${index}" cx="${xFor(index)}" cy="${yFor(value)}" r="3"><title>${timeLabel(samples[index])} ・ ${value.toLocaleString()}人</title></circle>`).join('');
+      root.innerHTML = `<h3>${escapeAdmin(title)}</h3><p class="viewer-chart-summary"><strong>最大 ${max.toLocaleString()}</strong><span>ピーク ${peakTime}</span><span>${samples.length}点（5分ごと）</span></p><svg class="viewer-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="同接推移。最大同接 ${max.toLocaleString()}人、ピーク時刻 ${peakTime}"><defs><linearGradient id="viewer-chart-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="#22d3ee" stop-opacity=".30"/><stop offset="100%" stop-color="#22d3ee" stop-opacity="0"/></linearGradient></defs><g class="viewer-chart-grid">${yGrid}${xGrid}</g><polygon class="viewer-chart-area" points="${areaPoints}"/><line class="viewer-chart-peak-guide" x1="${peakX}" y1="${peakY}" x2="${peakX}" y2="${height - plot.bottom}"/><polyline class="viewer-chart-line" points="${points}"/><g class="viewer-chart-samples">${samplePoints}</g><g class="viewer-chart-peak"><circle cx="${peakX}" cy="${peakY}" r="6"/><text x="${peakTextX}" y="${peakTextY}" text-anchor="${peakAnchor}">最大 ${max.toLocaleString()}・${peakTime}</text></g></svg><p class="viewer-chart-detail">ピーク: ${peakTime} ・ ${max.toLocaleString()}人（点をタップすると詳細を表示）</p><p>${new Date(samples[0].observed_at).toLocaleString('ja-JP')} 〜 ${new Date(samples.at(-1).observed_at).toLocaleString('ja-JP')}</p>`;
+      const detail = root.querySelector('.viewer-chart-detail');
+      root.querySelectorAll('.viewer-chart-sample').forEach((point) => {
+        const select = () => {
+          root.querySelectorAll('.viewer-chart-sample.is-selected').forEach((item) => item.classList.remove('is-selected'));
+          point.classList.add('is-selected');
+          const index = Number(point.dataset.index); const sample = samples[index];
+          detail.textContent = `${timeLabel(sample)} ・ ${Number(sample.viewers || 0).toLocaleString()}人`;
+        };
+        point.addEventListener('click', select);
+        point.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); select(); } });
+        point.setAttribute('tabindex', '0');
+        point.setAttribute('role', 'button');
+        point.setAttribute('aria-label', `${timeLabel(samples[Number(point.dataset.index)])}、${Number(samples[Number(point.dataset.index)].viewers || 0).toLocaleString()}人`);
+      });
     } catch (error) { root.textContent = `読み込みに失敗しました: ${error.message}`; }
   }
 

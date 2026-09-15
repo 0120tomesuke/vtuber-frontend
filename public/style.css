@@ -1447,11 +1447,21 @@ body.menu-open #side-menu {
 }
 .viewer-chart-btn { padding: 2px 5px; border: 1px solid currentColor; border-radius: 5px; background: transparent; color: inherit; font-size: 11px; cursor: pointer; }
 .viewer-chart { display: block; width: 100%; height: clamp(150px, 26vw, 200px); margin: 10px 0; border-radius: 8px; background: #0f172a; }
+.viewer-chart-summary { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: baseline; }
+.viewer-chart-summary strong { color: #fda4af; font-size: 16px; }
+.viewer-chart-summary span { color: #cbd5e1; }
 .viewer-chart-grid line { stroke: rgba(148, 163, 184, .28); stroke-width: 1; vector-effect: non-scaling-stroke; }
 .viewer-chart-grid text { fill: #94a3b8; font-size: 17px; font-weight: 600; }
 .viewer-chart-line { fill: none; stroke: #22d3ee; stroke-width: 3; vector-effect: non-scaling-stroke; stroke-linejoin: round; stroke-linecap: round; }
+.viewer-chart-area { fill: url(#viewer-chart-fill); pointer-events: none; }
+.viewer-chart-peak-guide { stroke: rgba(253, 164, 175, .5); stroke-width: 1; stroke-dasharray: 5 4; vector-effect: non-scaling-stroke; }
+.viewer-chart-sample { fill: #67e8f9; stroke: #0f172a; stroke-width: 1.5; vector-effect: non-scaling-stroke; cursor: pointer; }
+.viewer-chart-sample:hover,
+.viewer-chart-sample:focus,
+.viewer-chart-sample.is-selected { fill: #fbbf24; stroke: #fff; stroke-width: 2.5; outline: none; }
 .viewer-chart-peak circle { fill: #f43f5e; stroke: #fff; stroke-width: 2; vector-effect: non-scaling-stroke; }
 .viewer-chart-peak text { fill: #fda4af; font-size: 18px; font-weight: 800; paint-order: stroke; stroke: #0f172a; stroke-width: 5; stroke-linejoin: round; }
+.viewer-chart-detail { min-height: 1.5em; color: #e0f2fe !important; font-weight: 800; }
 
 /* 同接グラフは管理画面とは別の、コンパクトな中央ダイアログにする。 */
 #viewer-modal { align-items: center; justify-content: center; }
@@ -1470,6 +1480,9 @@ body.menu-open #side-menu {
   #viewer-modal .admin-panel { width: calc(100vw - 24px); max-height: calc(100dvh - 24px); padding: 14px; }
   #viewer-content h3 { font-size: 15px; }
   .viewer-chart { height: clamp(105px, 30vw, 150px); margin: 8px 0; }
+  .viewer-chart-grid text { font-size: 15px; }
+  .viewer-chart-summary strong { font-size: 15px; }
+  .viewer-chart-detail { font-size: 12px !important; }
 }
 
 /* Archived-stream statistics are metadata, not an alert.  Keep them clear of
