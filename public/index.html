@@ -541,6 +541,29 @@
     }).filter(Boolean));
   }
 
+  function channelIdForHeart(button) {
+    if (button.dataset.channelId) return button.dataset.channelId;
+    const match = String(button.getAttribute('onclick') || '').match(/'([^']+)'/);
+    return match?.[1] || '';
+  }
+
+  function setFavoriteHeart(channelId, isFavorite) {
+    document.querySelectorAll('.heart-btn').forEach((button) => {
+      if (channelIdForHeart(button) !== channelId) return;
+      button.classList.toggle('active', isFavorite);
+      button.textContent = isFavorite ? '♥' : '♡';
+    });
+  }
+
+  function syncFavoriteHearts(favorites) {
+    if (!Array.isArray(favorites)) return;
+    const favoriteIds = new Set(favorites.map((id) => String(id)));
+    document.querySelectorAll('.heart-btn').forEach((button) => {
+      const channelId = channelIdForHeart(button);
+      if (channelId) setFavoriteHeart(channelId, favoriteIds.has(channelId));
+    });
+  }
+
   function createManagedSidebarChannel(channel) {
     const channelId = String(channel.channel_id || '');
     const row = document.createElement('div');
@@ -604,8 +627,7 @@
     const wasActive = element.classList.contains("active");
     const isNowActive = !wasActive;
 
-    element.classList.toggle("active", isNowActive);
-    element.innerText = isNowActive ? "♥" : "♡";
+    setFavoriteHeart(channelId, isNowActive);
 
     try {
       const url = `${API_BASE_URL}/favorites/${encodeURIComponent(channelId)}`;
@@ -625,8 +647,7 @@
       }
     } catch (e) {
       console.error("バックエンド同期エラー:", e);
-      element.classList.toggle("active", wasActive);
-      element.innerText = wasActive ? "♥" : "♡";
+      setFavoriteHeart(channelId, wasActive);
       alert("お気に入りの同期に失敗しました。ネットワーク状況を確認してください。");
     }
   }
@@ -792,6 +813,7 @@
       .then(rawFav => {
         const cleanFav = sanitizeVideoData(rawFav, "FAV");
         videoDataCache.fav = cleanFav;
+        syncFavoriteHearts(cleanFav.favorites);
         try { localStorage.setItem('safe_video_cache_fav', JSON.stringify(cleanFav)); } catch (e) {}
 
         if (currentViewMode === 'fav' && !hasRenderedPrimary) {
