@@ -526,6 +526,76 @@
     }
   }
 
+  function sidebarGroupName(header) {
+    return Array.from(header.childNodes)
+      .filter((node) => node.nodeType === Node.TEXT_NODE)
+      .map((node) => node.textContent)
+      .join('')
+      .trim();
+  }
+
+  function sidebarChannelIds() {
+    return new Set(Array.from(document.querySelectorAll('.heart-btn:not([data-channel-id])')).map((button) => {
+      const match = String(button.getAttribute('onclick') || '').match(/'([^']+)'/);
+      return match?.[1] || '';
+    }).filter(Boolean));
+  }
+
+  function createManagedSidebarChannel(channel) {
+    const channelId = String(channel.channel_id || '');
+    const row = document.createElement('div');
+    row.className = 'fav-row sidebar-managed-channel';
+    row.dataset.channelId = channelId;
+
+    const link = document.createElement('a');
+    const savedUrl = String(channel.youtube_url || '').trim();
+    link.href = /^https?:\/\//i.test(savedUrl) ? savedUrl : `https://www.youtube.com/channel/${encodeURIComponent(channelId)}`;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = String(channel.name || channelId);
+
+    const heart = document.createElement('span');
+    const favorite = Boolean(channel.is_favorite);
+    heart.className = `heart-btn${favorite ? ' active' : ''}`;
+    heart.dataset.channelId = channelId;
+    heart.textContent = favorite ? '♥' : '♡';
+    heart.addEventListener('click', (event) => {
+      event.stopPropagation();
+      toggleHeart(heart, channelId);
+    });
+
+    row.append(link, heart);
+    return row;
+  }
+
+  async function syncManagedSidebarChannels() {
+    try {
+      const response = await fetch(`${API_BASE_URL}/channels`);
+      if (!response.ok) throw new Error(`チャンネル一覧の取得に失敗しました (${response.status})`);
+      const data = await response.json();
+      const channels = Array.isArray(data.channels) ? data.channels : [];
+      const groupContents = new Map(Array.from(document.querySelectorAll('.accordion-header')).map((header) => [sidebarGroupName(header), header.nextElementSibling]));
+      const staticIds = sidebarChannelIds();
+      const managedRows = new Map(Array.from(document.querySelectorAll('.sidebar-managed-channel')).map((row) => [row.dataset.channelId, row]));
+      const serverIds = new Set(channels.map((channel) => String(channel.channel_id || '')));
+
+      managedRows.forEach((row, channelId) => {
+        if (!serverIds.has(channelId)) row.remove();
+      });
+
+      channels.forEach((channel) => {
+        const channelId = String(channel.channel_id || '');
+        const target = groupContents.get(String(channel.group_name || '').trim());
+        if (!channelId || !target || staticIds.has(channelId)) return;
+        const existing = managedRows.get(channelId);
+        if (existing) existing.remove();
+        target.appendChild(createManagedSidebarChannel(channel));
+      });
+    } catch (error) {
+      console.warn('サイドメニューの管理チャンネルを更新できませんでした。', error);
+    }
+  }
+
   /**
    * お気に入り登録・解除通信（POSTメソッドによるJSON送信へ変更）
    */
@@ -1062,18 +1132,8 @@
     } else {
       document.body.classList.remove('mode-all');
     }
+    syncManagedSidebarChannels();
     loadVideos(true);
-  });
-
-  // The Worker refreshes its live/upcoming state about once a minute.  Keep an
-  // open screen in step with that state, but do not make background tabs poll
-  // and do not reset the tab the viewer is currently reading.
-  setInterval(() => {
-    if (document.visibilityState === 'visible' && !isFetchInProgress) loadVideos(false);
-  }, 60_000);
-
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && !isFetchInProgress) loadVideos(false);
   });
 
   function scrollToTop() {
@@ -1138,22 +1198,25 @@
   function renderAdmin(data) {
     const root = document.getElementById('admin-content');
     const settings = [['notifications_enabled','通知を有効化'], ['notify_new','新規配信'], ['notify_changed','配信変更'], ['notify_imminent','開始直前']];
+    const sidebarGroups = ['0期生', '1期生', '2期生', 'ゲーマーズ', '3期生', '4期生', '5期生', 'holoX (6期生)', 'ReGLOSS', 'FLOWGLOW', 'Holo EN', 'Holo ID', '個人勢'];
+    const channelCollator = new Intl.Collator('ja-JP', { usage: 'sort', sensitivity: 'base', numeric: true });
+    const channels = [...data.channels].sort((left, right) => channelCollator.compare(String(left.name || left.channel_id), String(right.name || right.channel_id)));
     root.innerHTML = `
       <details class="admin-section" open><summary>通知設定</summary><div class="admin-section-body"><div class="admin-toggles">${settings.map(([key,label]) => `<label><input type="checkbox" data-setting="${key}" ${adminSetting(data,key) ? 'checked' : ''}> ${label}</label>`).join('')}<label>送信先 <input data-notification-email type="email" value="${escapeAdmin(data.settings.find((item) => item.setting_key === 'notification_email')?.setting_value || '')}" placeholder="未設定時はCloudflare設定を使用"></label></div><button onclick="saveAdminSettings()">通知設定を保存</button></div></details>
-      <details class="admin-section"><summary>チャンネルを追加・更新</summary><div class="admin-section-body"><form onsubmit="saveAdminChannel(event)" class="admin-form admin-channel-form"><input name="channelId" placeholder="UCから始まるチャンネルID" required><input name="name" placeholder="表示名" required><input name="groupName" placeholder="グループ（任意）"><input name="youtubeUrl" placeholder="YouTube URL（任意）"><label>全体監視 <input type="checkbox" name="isGlobal" checked></label><label>お気に入り <input type="checkbox" name="isFavorite"></label><label>除外 <input type="checkbox" name="isExcluded"></label><label>優先度 <input type="number" name="priority" min="0" max="10" value="0"></label><button>保存</button></form></div></details>
+      <details class="admin-section"><summary>チャンネルを追加・更新</summary><div class="admin-section-body"><p class="admin-help">サイドメニューにも載せる場合は、所属を選択してください。</p><form onsubmit="saveAdminChannel(event)" class="admin-form admin-channel-form"><input name="channelId" placeholder="UCから始まるチャンネルID" required><input name="name" placeholder="表示名" required><select name="groupName" aria-label="サイドメニューの所属"><option value="">サイドメニューに表示しない</option>${sidebarGroups.map((group) => `<option value="${group}">${group}</option>`).join('')}</select><input name="youtubeUrl" placeholder="YouTube URL（任意）"><label>全体監視 <input type="checkbox" name="isGlobal" checked></label><label>お気に入り <input type="checkbox" name="isFavorite"></label><label>除外 <input type="checkbox" name="isExcluded"></label><label>優先度 <input type="number" name="priority" min="0" max="10" value="0"></label><button>保存</button></form></div></details>
       <details class="admin-section"><summary>イベントキーワード <small class="admin-section-count">${data.keywords.length}件</small></summary><div class="admin-section-body"><form onsubmit="saveAdminKeyword(event)" class="admin-form"><input name="category" placeholder="カテゴリ（例：記念）" required><input name="keyword" placeholder="キーワード" required><button>追加</button></form><div class="admin-chips">${data.keywords.map((x) => `<span>${escapeAdmin(x.category)}：${escapeAdmin(x.keyword)} <button aria-label="キーワードを削除" onclick="deleteAdmin('event-keywords/${encodeURIComponent(x.category)}/${encodeURIComponent(x.keyword)}')">×</button></span>`).join('')}</div></div></details>
       <details class="admin-section"><summary>除外ワード <small class="admin-section-count">${data.excludeWords.length}件</small></summary><div class="admin-section-body"><form onsubmit="saveExcludeWord(event)" class="admin-form"><input name="keyword" placeholder="除外ワード" required><button>追加</button></form><div class="admin-chips">${data.excludeWords.map((x) => `<span>${escapeAdmin(x)} <button aria-label="除外ワードを削除" onclick="deleteAdmin('exclude-words/${encodeURIComponent(x)}')">×</button></span>`).join('')}</div></div></details>
-      <details class="admin-section"><summary>チャンネル一覧 <small class="admin-section-count">${data.channels.length}件</small></summary><div class="admin-section-body"><div class="admin-list">${data.channels.map((x) => `<div><strong>${escapeAdmin(x.name || x.channel_id)}</strong><small>${escapeAdmin(x.channel_id)} / 全体:${x.is_global ? '○' : '－'} / ★:${x.is_favorite ? '○' : '－'} / 優先:${x.priority}</small><button onclick="deleteAdmin('channels/${encodeURIComponent(x.channel_id)}')">削除</button></div>`).join('')}</div></div></details>
+      <details class="admin-section"><summary>チャンネル一覧 <small class="admin-section-count">五十音順・${channels.length}件</small></summary><div class="admin-section-body"><div class="admin-list">${channels.map((x) => `<div><strong>${escapeAdmin(x.name || x.channel_id)}</strong><small>${escapeAdmin(x.channel_id)} / 所属:${escapeAdmin(x.group_name || '表示しない')} / 全体:${x.is_global ? '○' : '－'} / ★:${x.is_favorite ? '○' : '－'} / 優先:${x.priority}</small><button onclick="deleteAdmin('channels/${encodeURIComponent(x.channel_id)}')">削除</button></div>`).join('')}</div></div></details>
       <details class="admin-section"><summary>直近の監視実行 <small class="admin-section-count">${data.runs.length}件</small></summary><div class="admin-section-body"><div class="admin-log">${data.runs.map((x) => `<div>${new Date(x.started_at).toLocaleString('ja-JP')}｜${escapeAdmin(x.status)}｜検出 ${x.discovered_count}件 ${escapeAdmin(x.message || '')}</div>`).join('') || 'まだ記録はありません'}</div></div></details>
       <details class="admin-section"><summary>直近の通知 <small class="admin-section-count">${data.notifications.length}件</small></summary><div class="admin-section-body"><div class="admin-log">${data.notifications.map((x) => `<div>${new Date(x.created_at).toLocaleString('ja-JP')}｜${escapeAdmin(x.notification_type)}｜${escapeAdmin(x.status)}｜${escapeAdmin(x.subject)}</div>`).join('') || 'まだ記録はありません'}</div></div></details>
       <details class="admin-section"><summary>直近の通知エラー <small class="admin-section-count">${(data.errors || []).length}件</small></summary><div class="admin-section-body"><div class="admin-log">${(data.errors || []).map((x) => `<div>${new Date(String(x.updated_at).replace(' ', 'T') + 'Z').toLocaleString('ja-JP')}｜${escapeAdmin(x.state_key)}｜${escapeAdmin(x.state_value)}</div>`).join('') || 'エラーはありません'}</div></div></details>`;
   }
   async function refreshAdmin() { renderAdmin(await adminFetch('overview')); }
   async function saveAdminSettings() { const body = {}; document.querySelectorAll('[data-setting]').forEach((input) => { body[input.dataset.setting] = input.checked; }); body.notification_email = document.querySelector('[data-notification-email]').value.trim(); await adminFetch('settings', { method: 'PUT', body: JSON.stringify(body) }); await refreshAdmin(); }
-  async function saveAdminChannel(event) { event.preventDefault(); const form = new FormData(event.target); const body = Object.fromEntries(form.entries()); ['isGlobal','isFavorite','isExcluded'].forEach((key) => body[key] = form.get(key) === 'on'); await adminFetch('channels', { method: 'PUT', body: JSON.stringify(body) }); await refreshAdmin(); }
+  async function saveAdminChannel(event) { event.preventDefault(); const form = new FormData(event.target); const body = Object.fromEntries(form.entries()); ['isGlobal','isFavorite','isExcluded'].forEach((key) => body[key] = form.get(key) === 'on'); await adminFetch('channels', { method: 'PUT', body: JSON.stringify(body) }); await Promise.all([refreshAdmin(), syncManagedSidebarChannels()]); }
   async function saveAdminKeyword(event) { event.preventDefault(); const form = new FormData(event.target); await adminFetch('event-keywords', { method: 'PUT', body: JSON.stringify(Object.fromEntries(form.entries())) }); await refreshAdmin(); }
   async function saveExcludeWord(event) { event.preventDefault(); const form = new FormData(event.target); await adminFetch('exclude-words', { method: 'PUT', body: JSON.stringify(Object.fromEntries(form.entries())) }); await refreshAdmin(); }
-  async function deleteAdmin(path) { if (!window.confirm('削除しますか？')) return; await adminFetch(path, { method: 'DELETE' }); await refreshAdmin(); }
+  async function deleteAdmin(path) { if (!window.confirm('削除しますか？')) return; await adminFetch(path, { method: 'DELETE' }); await refreshAdmin(); if (path.startsWith('channels/')) await syncManagedSidebarChannels(); }
 </script>
 <div id="admin-modal" class="admin-modal" style="display:none" onclick="if(event.target===this)closeAdmin()"><div class="admin-panel" role="dialog" aria-modal="true" aria-labelledby="admin-title"><button class="admin-close" aria-label="管理画面を閉じる" onclick="closeAdmin()">×</button><h2 id="admin-title">管理・通知設定</h2><p class="admin-intro">変更はD1に保存されます。項目をタップして開く、コンパクトな設定画面です。</p><div id="admin-content"></div></div></div>
 <div id="viewer-modal" class="admin-modal" style="display:none" onclick="if(event.target===this)this.style.display='none'"><div class="admin-panel"><button class="admin-close" onclick="document.getElementById('viewer-modal').style.display='none'">×</button><div id="viewer-content"></div></div></div>

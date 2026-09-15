@@ -1380,8 +1380,9 @@ body.menu-open #side-menu {
 .admin-section-count { margin-left: auto; color: #94a3b8; font-size: 11px; font-weight: 600; }
 .admin-section-body { padding: 12px; }
 .admin-panel h3 { margin: 0 0 10px; color: #a5f3fc; }
-.admin-panel input { min-width: 0; max-width: 100%; padding: 8px; border: 1px solid #64748b; border-radius: 6px; background: #0f172a; color: #fff; }
+.admin-panel input, .admin-panel select { min-width: 0; max-width: 100%; padding: 8px; border: 1px solid #64748b; border-radius: 6px; background: #0f172a; color: #fff; }
 .admin-panel button { min-height: 34px; margin: 3px; padding: 7px 10px; border: 0; border-radius: 6px; background: #0891b2; color: #fff; cursor: pointer; }
+.admin-help { margin: 0 0 9px; color: #94a3b8; font-size: 12px; line-height: 1.45; }
 .admin-form, .admin-toggles { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .admin-toggles label { display: inline-flex; align-items: center; gap: 5px; padding: 6px 9px; background: #0f172a; border-radius: 6px; }
 .admin-toggles label:has([data-notification-email]) { flex: 1 1 280px; }
@@ -1408,7 +1409,7 @@ body.menu-open #side-menu {
   .admin-section summary { min-height: 42px; padding: 0 11px; font-size: 14px; }
   .admin-section-body { padding: 10px; }
   .admin-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; }
-  .admin-form input { width: 100%; box-sizing: border-box; min-height: 40px; }
+  .admin-form input, .admin-form select { width: 100%; box-sizing: border-box; min-height: 40px; }
   .admin-form button { min-height: 40px; margin: 0; }
   .admin-channel-form { grid-template-columns: 1fr 1fr; }
   .admin-channel-form input[name="channelId"], .admin-channel-form input[name="youtubeUrl"] { grid-column: 1 / -1; }

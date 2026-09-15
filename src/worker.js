@@ -1290,6 +1290,11 @@ async function api(request, env, url) {
   if (url.pathname.startsWith('/api/admin/')) return adminApi(request, env, url);
   const legacyAction = url.searchParams.get('action');
   const legacyAll = url.pathname === '/' && url.searchParams.get('mode') === 'all';
+  if (request.method === 'GET' && url.pathname === '/api/channels') {
+    if (!await operationalReady(env)) return json({ channels: [] });
+    const channels = await queryAll(env, "SELECT channel_id, name, group_name, youtube_url, is_favorite FROM channels WHERE group_name <> '' ORDER BY group_name, name");
+    return json({ channels });
+  }
   if (url.pathname === '/api/videos' || legacyAll) {
     const all = url.searchParams.get('mode') === 'all'; const master = await masters(env);
     const scope = all ? 'all' : 'ui';
