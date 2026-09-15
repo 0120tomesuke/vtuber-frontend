@@ -2,11 +2,15 @@ const TOKYO = 'Asia/Tokyo';
 const HOLODEX = 'https://holodex.net/api/v2';
 // Workers on the free plan limits the number of subrequests per invocation.
 // RSS is a supplemental source, so scan it in small rotating batches.
-const RSS_CHANNELS_PER_SCAN = 20;
+const RSS_CHANNELS_PER_SCAN = 6;
 // RSS discovers newly published videos. Holodex remains responsible for
 // collaboration metadata, which can be added after a stream has started.
 // Keep this modest because the free Worker also performs 20 RSS requests.
-const HOLODEX_GUEST_DETAILS_PER_RUN = { live: 4, upcoming: 3, ended: 1 };
+const HOLODEX_GUEST_DETAILS_PER_RUN = { live: 1, upcoming: 1, ended: 0 };
+// The live board only needs recently finished cards. Full 90-day history is
+// retained in `videos` and exposed through /api/history, but repeatedly
+// loading every old ended card was the largest source of D1 rows_read.
+const ENDED_STATE_RETENTION_MS = 36 * 60 * 60_000;
 
 // Video state is time-sensitive.  Never allow a browser or intermediary to
 // reuse an old API response after a stream changes from upcoming to live.
@@ -64,9 +68,13 @@ async function externalClassificationReady(env) {
   return externalClassificationReadyCache.get(env);
 }
 function statusOf(item) { return item.isEnded ? 'ended' : item.isLive ? 'live' : 'upcoming'; }
-async function readVideoState(env, scope, status) {
+function endedStateSince(now = Date.now()) { return now - ENDED_STATE_RETENTION_MS; }
+async function readVideoState(env, scope, status, { stateUpdatedSince = null } = {}) {
   if (!await operationalReady(env)) return null;
-  const rows = await queryAll(env, `SELECT v.data_json FROM video_states s JOIN videos v ON v.video_id = s.video_id WHERE s.scope = ? AND s.status = ? ORDER BY COALESCE(v.start_time, '') ${status === 'ended' ? 'DESC' : 'ASC'}`, scope, status);
+  const clauses = ['s.scope = ?', 's.status = ?'];
+  const bindings = [scope, status];
+  if (stateUpdatedSince) { clauses.push('s.updated_at >= ?'); bindings.push(stateUpdatedSince); }
+  const rows = await queryAll(env, `SELECT v.data_json FROM video_states s JOIN videos v ON v.video_id = s.video_id WHERE ${clauses.join(' AND ')} ORDER BY COALESCE(v.start_time, '') ${status === 'ended' ? 'DESC' : 'ASC'}`, ...bindings);
   return rows.flatMap((row) => { try { return [JSON.parse(row.data_json)]; } catch { return []; } });
 }
 function durableVideo(item) {
@@ -118,7 +126,10 @@ async function runStatements(env, statements) {
 async function persistVideoScope(env, scope, groups, now) {
   const desired = new Map();
   Object.entries(groups).forEach(([status, items]) => (items || []).forEach((item) => { if (item?.videoId) desired.set(item.videoId, { item, status, dataJson: JSON.stringify(durableVideo(item)) }); }));
-  const existingStates = new Map((await queryAll(env, 'SELECT video_id, status FROM video_states WHERE scope=?', scope)).map((row) => [row.video_id, row.status]));
+  // Do not scan a 90-day archive on every monitor pass. Old ended links are
+  // pruned by daily maintenance; only live, upcoming, and recent ended cards
+  // participate in the hot reconciliation path.
+  const existingStates = new Map((await queryAll(env, "SELECT video_id, status FROM video_states WHERE scope=? AND (status <> 'ended' OR updated_at >= ?)", scope, endedStateSince(now))).map((row) => [row.video_id, row.status]));
   const existingVideos = await storedVideos(env, [...desired.keys()]);
   const statements = [];
   desired.forEach(({ item, status, dataJson }, videoId) => {
@@ -412,9 +423,9 @@ async function allowedExternalChannelIds(env, rawVideos, globalIds) {
   if (!await externalClassificationReady(env)) return new Set();
   const rows = await queryAll(env, `SELECT channel_id, is_holostars FROM external_channel_classifications WHERE channel_id IN (${externalIds.map(() => '?').join(',')})`, ...externalIds);
   const decisions = new Map(rows.map((row) => [row.channel_id, Number(row.is_holostars)]));
-  const unknown = externalIds.filter((id) => !decisions.has(id)).slice(0, 4);
+  const unknown = externalIds.filter((id) => !decisions.has(id)).slice(0, 2);
   const statements = [];
-  await mapLimit(unknown, 4, async (channelId) => {
+  await mapLimit(unknown, 2, async (channelId) => {
     try {
       const channel = await holodex(env, `/channels/${encodeURIComponent(channelId)}`);
       const isHolostars = isHolostarsChannel(channel) ? 1 : 0;
@@ -437,13 +448,16 @@ function changedFields(item, previous) {
 }
 function isoDurationSeconds(value) { const match = /^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/.exec(value || ''); return match ? Number(match[1] || 0) * 3600 + Number(match[2] || 0) * 60 + Number(match[3] || 0) : 0; }
 function tokyoHour(date = new Date()) { return Number(new Intl.DateTimeFormat('en-US', { timeZone: TOKYO, hour: '2-digit', hourCycle: 'h23' }).format(date)); }
-function isOffPeak(date = new Date()) { const hour = tokyoHour(date); return hour >= 2 && hour < 9; }
 function youtubeInterval(date = new Date()) { return monitorInterval(date); }
-// One 20-channel RSS batch per minute means roughly 100 channels are swept in
-// five minutes without exceeding Workers Free's 50 external-subrequest limit.
-// Start alerts still run from every Cron tick.  Only the expensive full
-// catalogue/viewer reconciliation slows down during the quietest JST hours.
-function monitorInterval(date = new Date()) { return isOffPeak(date) ? 5 * 60_000 : 55_000; }
+// Match the proven GAS cadence outside prime time. The user-priority
+// 15:00–24:00 JST window receives a full one-minute reconciliation. The
+// queue also runs each minute so the two-minute-before start alert is precise.
+function monitorInterval(date = new Date()) {
+  const hour = tokyoHour(date);
+  if (hour >= 2 && hour < 7) return 50 * 60_000;
+  if (hour < 2 || hour < 15) return 7.5 * 60_000;
+  return 55_000;
+}
 async function mapLimit(values, limit, fn) { let cursor = 0; await Promise.all(Array.from({ length: Math.min(limit, values.length) }, async () => { while (cursor < values.length) { const index = cursor++; await fn(values[index]); } })); }
 async function rssIds(channelIds) { const ids = new Set(); await mapLimit(channelIds, 6, async (channelId) => { try { const response = await fetch(`https://www.youtube.com/feeds/videos.xml?channel_id=${encodeURIComponent(channelId)}`); if (!response.ok) return; for (const match of (await response.text()).matchAll(/<yt:videoId>([a-zA-Z0-9_-]{11})<\/yt:videoId>/g)) ids.add(match[1]); } catch { /* A single RSS failure is non-fatal. */ } }); return [...ids]; }
 function rotatingBatch(values, cursor, size) {
@@ -546,6 +560,7 @@ async function cleanupOperationalData(env, now = Date.now()) {
     env.DB.prepare('DELETE FROM notification_log WHERE created_at < ?').bind(ninetyDays),
     env.DB.prepare('DELETE FROM monitor_runs WHERE started_at < ?').bind(ninetyDays),
     env.DB.prepare('DELETE FROM rss_seen WHERE last_seen_at < ?').bind(ninetyDays),
+    env.DB.prepare("DELETE FROM video_states WHERE status='ended' AND updated_at < ?").bind(now - ENDED_STATE_RETENTION_MS),
     env.DB.prepare('DELETE FROM imminent_notifications WHERE COALESCE(sent_at, claimed_at) < ?').bind(ninetyDays),
     env.DB.prepare('DELETE FROM notification_deliveries WHERE COALESCE(sent_at, claimed_at) < ?').bind(ninetyDays)
   ]);
@@ -557,19 +572,34 @@ async function archiveStats(env, videoId, fallback, bufferedPeak = 0) {
   if (cache.has(videoId)) return cache.get(videoId);
   const task = (async () => {
     const storedPeak = await operationalReady(env) ? await env.DB.prepare('SELECT peak_viewers FROM videos WHERE video_id=?').bind(videoId).first() : null;
-    const [youtube, detail] = await Promise.allSettled([async () => {
+    const youtube = await Promise.resolve().then(async () => {
       if (!env.YOUTUBE_API_KEY) return 0;
       const query = new URLSearchParams({ part: 'contentDetails', id: videoId, key: env.YOUTUBE_API_KEY });
       const response = await fetch(`https://www.googleapis.com/youtube/v3/videos?${query}`);
       return response.ok ? isoDurationSeconds((await response.json()).items?.[0]?.contentDetails?.duration) : 0;
-    }, holodex(env, `/videos/${encodeURIComponent(videoId)}`)]);
-    const peak = Math.max(Number(storedPeak?.peak_viewers || 0), Number(bufferedPeak || 0), Number(detail.status === 'fulfilled' ? detail.value?.live_viewers : 0), Number(String(fallback.liveViewersFormatted || 0).replaceAll(',', '')) || 0);
-    return { duration: youtube.status === 'fulfilled' ? youtube.value : 0, peak };
+    }).catch(() => 0);
+    // Holodex is the authority while live and liveSnapshot retains that peak.
+    // A second per-video Holodex detail request after every end pushed busy
+    // monitor runs toward Workers' 50-subrequest ceiling without improving
+    // the persisted state transition.
+    const peak = Math.max(Number(storedPeak?.peak_viewers || 0), Number(bufferedPeak || 0), Number(String(fallback.liveViewersFormatted || 0).replaceAll(',', '')) || 0);
+    return { duration: youtube, peak };
   })();
   cache.set(videoId, task);
   return task;
 }
-async function endedFrom(previous, current, env, keep, viewerBuffer = {}) { const currentIds = new Set(current.map((item) => item.videoId)); const candidates = previous.filter((item) => !currentIds.has(item.videoId) && new Date(item.startTimeRaw).getTime() <= Date.now()); return (await Promise.all(candidates.map(async (item) => { const stats = await archiveStats(env, item.videoId, item, viewerBuffer[item.videoId]?.peak); return { ...item, isLive: false, isEnded: true, liveViewersFormatted: stats.peak ? Number(stats.peak).toLocaleString() : item.liveViewersFormatted, durationLabel: stats.duration ? formatDuration(stats.duration) : item.durationLabel }; }))).filter((item) => new Date(item.startTimeRaw).getTime() >= keep); }
+async function endedFrom(previous, current, env, keep, viewerBuffer = {}) {
+  const currentIds = new Set(current.map((item) => item.videoId));
+  const candidates = previous.filter((item) => !currentIds.has(item.videoId) && new Date(item.startTimeRaw).getTime() <= Date.now());
+  return (await Promise.all(candidates.map(async (item, index) => {
+    // Archive duration is a cosmetic enrichment. Cap it so a large batch of
+    // streams ending together cannot exhaust the per-invocation subrequest
+    // budget and prevent core state updates or mail.
+    if (index >= 3) return { ...item, isLive: false, isEnded: true };
+    const stats = await archiveStats(env, item.videoId, item, viewerBuffer[item.videoId]?.peak);
+    return { ...item, isLive: false, isEnded: true, liveViewersFormatted: stats.peak ? Number(stats.peak).toLocaleString() : item.liveViewersFormatted, durationLabel: stats.duration ? formatDuration(stats.duration) : item.durationLabel };
+  }))).filter((item) => new Date(item.startTimeRaw).getTime() >= keep);
+}
 const html = (value) => String(value || '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
 const formatDate = (value) => format(value, true);
 const formatHour = (value) => format(value).slice(6, 8);
@@ -798,7 +828,15 @@ async function sendMail(env, { senderName, recipient, subject, html: htmlBody })
       return await deliverMail(resendReady(env) ? [{ name: 'resend', send: resend }] : []);
     } catch (error) {
       if (!gasRelayReady(env)) throw error;
-      const fallback = await deliverMail([{ name: 'gas', send: gas }]);
+      let fallback;
+      try {
+        fallback = await deliverMail([{ name: 'gas', send: gas }]);
+      } catch (fallbackError) {
+        // Keep the primary failure in the log. Previously this hid a Resend
+        // quota/configuration error and made the fallback's subrequest limit
+        // look like the only cause.
+        throw new Error(`resend: ${String(error.message || error).slice(0, 500)} | gas: ${String(fallbackError.message || fallbackError).slice(0, 500)}`);
+      }
       fallback.partial = true;
       fallback.providers = { resend: 'failed', ...fallback.providers };
       fallback.errors.unshift(`resend: ${String(error.message || error).slice(0, 500)}`);
@@ -1015,18 +1053,25 @@ async function monitor(env) {
   const chunks = Array.from({ length: Math.ceil(ids.length / 50) }, (_, index) => ids.slice(index * 50, index * 50 + 50));
   const favoriteChannelIds = Object.keys(master.favorites);
   const [own, external, favRaw] = await Promise.all([
-    Promise.all(chunks.map((chunk) => holodex(env, '/live', { channels: chunk.join(','), include: 'mentions,description', max_upcoming_hours: '336' }))),
-    holodex(env, '/live', { org: 'Hololive', include: 'mentions,description', limit: '50', max_upcoming_hours: '336' }),
+    Promise.all(chunks.map((chunk) => holodex(env, '/live', { channels: chunk.join(','), include: 'mentions', max_upcoming_hours: '336' }))),
+    holodex(env, '/live', { org: 'Hololive', include: 'mentions', limit: '50', max_upcoming_hours: '336' }),
     favoriteChannelIds.length ? holodex(env, '/users/live', { channels: favoriteChannelIds.join(',') }) : []
   ]);
   const allowedExternalIds = await allowedExternalChannelIds(env, external, globalIds);
   const permittedExternal = external.filter((raw) => globalIds.has(raw.channel?.id) || allowedExternalIds.has(raw.channel?.id));
   const holodexVideos = [...own.flat(), ...permittedExternal].map((raw) => enrichGuestSignals(video(raw, globalIds, master.talentMap), master)).filter((item) => hasRosterConnection(item, globalIds) && shouldInclude(item, master));
   const favoriteVideos = favRaw.map((raw) => enrichGuestSignals(video(raw, globalIds, master.talentMap), master));
-  const [dbAllLive, dbAllUpcoming, dbAllEnded, dbUiLive, dbUiUpcoming, dbUiEnded, dbNotificationHistory, legacyAllLive, legacyAllUpcoming, legacyAllEnded, legacyUiLive, legacyUiUpcoming, legacyUiEnded, legacyNotificationHistory, viewerBuffer, monitorError] = await Promise.all([
-    readVideoState(env, 'all', 'live'), readVideoState(env, 'all', 'upcoming'), readVideoState(env, 'all', 'ended'), readVideoState(env, 'ui', 'live'), readVideoState(env, 'ui', 'upcoming'), readVideoState(env, 'ui', 'ended'), readNotificationHistory(env),
-    getState(env, 'all_live', []), getState(env, 'all_upcoming', []), getState(env, 'all_ended', []), getState(env, 'ui_live', []), getState(env, 'ui_upcoming', []), getState(env, 'ui_ended', []), getState(env, 'notification_history', {}), getState(env, 'viewer_buffer', {}), getState(env, 'monitor_error', null)
+  const stateCutoff = endedStateSince(now);
+  const [dbAllLive, dbAllUpcoming, dbAllEnded, dbUiLive, dbUiUpcoming, dbUiEnded, dbNotificationHistory, viewerBuffer, monitorError] = await Promise.all([
+    readVideoState(env, 'all', 'live'), readVideoState(env, 'all', 'upcoming'), readVideoState(env, 'all', 'ended', { stateUpdatedSince: stateCutoff }), readVideoState(env, 'ui', 'live'), readVideoState(env, 'ui', 'upcoming'), readVideoState(env, 'ui', 'ended', { stateUpdatedSince: stateCutoff }), readNotificationHistory(env),
+    getState(env, 'viewer_buffer', {}), getState(env, 'monitor_error', null)
   ]);
+  // Legacy state blobs were migration scaffolding. Reading six large blobs on
+  // every monitor pass consumed D1 reads even after relational storage became
+  // the source of truth.
+  const [legacyAllLive, legacyAllUpcoming, legacyAllEnded, legacyUiLive, legacyUiUpcoming, legacyUiEnded, legacyNotificationHistory] = relationalStore
+    ? [[], [], [], [], [], [], {}]
+    : await Promise.all([getState(env, 'all_live', []), getState(env, 'all_upcoming', []), getState(env, 'all_ended', []), getState(env, 'ui_live', []), getState(env, 'ui_upcoming', []), getState(env, 'ui_ended', []), getState(env, 'notification_history', {})]);
   const processedRssIds = runtime.processedRssIds || [];
   const lastYoutubeScan = runtime.lastYoutubeScan || 0;
   const rssCursor = runtime.rssCursor || 0;
@@ -1066,7 +1111,7 @@ async function monitor(env) {
   // counts, matching the former GAS monitor. YouTube is only a supplemental
   // RSS path when Holodex has not returned a newly published video yet.
   const all = merge([...holodexVideos, ...youtubeVideos, ...guestRefresh.videos, ...favoriteVideos]).map((item) => enrichGuestSignals(item, master)).filter((item) => hasRosterConnection(item, globalIds) && shouldInclude(item, master));
-  const specialRaw = await holodex(env, '/live', { org: 'Hololive', include: 'mentions,description', max_upcoming_hours: '336' });
+  const specialRaw = await holodex(env, '/live', { org: 'Hololive', include: 'mentions', max_upcoming_hours: '336' });
   const specialCandidates = specialRaw.filter((raw) => isSpecial(raw.title, master.eventKeywords));
   const allowedSpecialExternalIds = await allowedExternalChannelIds(env, specialCandidates, globalIds);
   const specials = specialCandidates.filter((raw) => globalIds.has(raw.channel?.id) || allowedSpecialExternalIds.has(raw.channel?.id)).map((raw) => ({ ...enrichGuestSignals(video(raw, globalIds, master.talentMap), master), isSpecial: true })).filter((item) => hasRosterConnection(item, globalIds));
@@ -1090,7 +1135,7 @@ async function monitor(env) {
       // Backfill recent cards that were archived before duration enrichment
       // was unified. Limit this to one day to keep the one-time repair small.
       ...previousEnded.filter((item) => !item.durationLabel && new Date(item.startTimeRaw).getTime() >= now - 24 * 3600_000)
-    ].map((item) => [item.videoId, item])).values()].filter((item) => !previousEndedById.get(item.videoId)?.durationLabel);
+    ].map((item) => [item.videoId, item])).values()].filter((item) => !previousEndedById.get(item.videoId)?.durationLabel).slice(0, 3);
     const [disappeared, archivedExplicit] = await Promise.all([
       endedFrom([...previousLive, ...previousUpcoming], items, env, keep, liveSnapshot),
       // Holodex can report `past` before it exposes a duration.  Treat that
@@ -1109,7 +1154,7 @@ async function monitor(env) {
     });
     // Current Holodex details come last so they replace stale guest data in
     // the 90-day archive instead of being overwritten by the old D1 copy.
-    const ended = merge([...previousEnded, ...disappeared, ...endedFromHolodex, ...archivedExplicit]).filter((item) => new Date(item.startTimeRaw).getTime() >= keep).sort((a, b) => new Date(b.startTimeRaw) - new Date(a.startTimeRaw));
+    const ended = merge([...previousEnded, ...disappeared, ...endedFromHolodex, ...archivedExplicit]).filter((item) => new Date(item.startTimeRaw).getTime() >= now - ENDED_STATE_RETENTION_MS).sort((a, b) => new Date(b.startTimeRaw) - new Date(a.startTimeRaw));
     return { live, upcoming, ended };
   };
   const [allState, uiState] = await Promise.all([split(all, previousAllLive, previousAllUpcoming, previousAllEnded), split(classifiedFavorites, previousUiLive, previousUiUpcoming, previousUiEnded)]);
@@ -1246,7 +1291,7 @@ async function api(request, env, url) {
   if (url.pathname === '/api/videos' || legacyAll) {
     const all = url.searchParams.get('mode') === 'all'; const master = await masters(env);
     const scope = all ? 'all' : 'ui';
-    const [dbLive, dbUpcoming, dbEnded, monitorError, runtime] = await Promise.all([readVideoState(env, scope, 'live'), readVideoState(env, scope, 'upcoming'), readVideoState(env, scope, 'ended'), getState(env, 'monitor_error', null), getState(env, 'monitor_runtime', {})]);
+    const [dbLive, dbUpcoming, dbEnded, monitorError, runtime] = await Promise.all([readVideoState(env, scope, 'live'), readVideoState(env, scope, 'upcoming'), all ? Promise.resolve([]) : readVideoState(env, scope, 'ended', { stateUpdatedSince: endedStateSince() }), getState(env, 'monitor_error', null), getState(env, 'monitor_runtime', {})]);
     const [legacyLive, legacyUpcoming, legacyEnded] = dbLive === null ? await Promise.all([getState(env, all ? 'all_live' : 'ui_live', []), getState(env, all ? 'all_upcoming' : 'ui_upcoming', []), getState(env, all ? 'all_ended' : 'ui_ended', [])]) : [[], [], []];
     const live = applyLiveSnapshot(dbLive ?? legacyLive, runtime?.liveSnapshot); const upcoming = dbUpcoming ?? legacyUpcoming; const ended = dbEnded ?? legacyEnded;
     const videos = all ? [...live, ...upcoming] : [...live, ...upcoming, ...ended];
@@ -1290,7 +1335,11 @@ export default {
     // Workers Free allows only 10 ms of CPU for Cron Triggers. Queueing a
     // tiny job here keeps the schedule reliable; the Queue consumer performs
     // the network-heavy monitor work with its own longer execution budget.
-    context.waitUntil(env.MONITOR_QUEUE.send({ requestedAt: event.scheduledTime || Date.now() }));
+    const requestedAt = event.scheduledTime || Date.now();
+    // The queue runs every minute for precise start alerts. `monitorInterval`
+    // independently gates the expensive full reconciliation at the proven
+    // GAS cadence above.
+    context.waitUntil(env.MONITOR_QUEUE.send({ requestedAt }));
   },
   async queue(batch, env) {
     for (const message of batch.messages) {
