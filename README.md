@@ -45,6 +45,8 @@ Cloudflareは監視・通知判定だけを担当し、メール送信だけをG
 4. 初回承認後、末尾が `/exec` のURLをコピーする。
 5. Cloudflare WorkerのSecretsに `GAS_MAIL_RELAY_URL` と `GAS_MAIL_RELAY_TOKEN` を登録する。前者には `/exec` URL、後者には手順2と同じトークンを入れる。
 
+メールの重複防止には、現在の [`gas/mail-relay.gs`](gas/mail-relay.gs) をGASへ貼り直し、**デプロイを管理 > 編集 > 新しいバージョン**でウェブアプリを更新してからWorkerをデプロイする。GASは通知IDを8日間記録する。同じ通知IDの再試行ではメールを再送せず成功を返す。既存のGASデプロイに古いコードが残っていると、この対策は働かない。
+
 トークンが一致しないリクエストはGAS側で拒否されるため、Webアプリを公開しても第三者がメール送信に利用することはできません。GAS中継が設定されると、Gmail APIとResendより優先されます。
 
 ## Resendへ段階移行する

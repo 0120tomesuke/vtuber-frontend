@@ -718,12 +718,13 @@ function resendReady(env) {
 function gasRelayReady(env) {
   return Boolean(env.GAS_MAIL_RELAY_URL && env.GAS_MAIL_RELAY_TOKEN);
 }
-async function gasRelaySend(env, { senderName, recipient, subject, html: htmlBody }) {
+async function gasRelaySend(env, { senderName, recipient, subject, html: htmlBody, deliveryId }) {
   const response = await fetch(env.GAS_MAIL_RELAY_URL, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       token: env.GAS_MAIL_RELAY_TOKEN,
+      deliveryId,
       senderName,
       recipient,
       subject,
@@ -806,8 +807,8 @@ async function deliverMail(providers) {
   if (!succeeded) throw new Error(`All mail providers failed. ${errors.join(' | ')}`);
   return { sent: true, partial: succeeded !== providers.length, providers: providerStatus, errors };
 }
-async function sendMail(env, { senderName, recipient, subject, html: htmlBody }) {
-  const gas = () => gasRelaySend(env, { senderName, recipient, subject, html: htmlBody });
+async function sendMail(env, { senderName, recipient, subject, html: htmlBody, deliveryId }) {
+  const gas = () => gasRelaySend(env, { senderName, recipient, subject, html: htmlBody, deliveryId });
   const gmail = () => gmailSend(env, { senderName, recipient, subject, html: htmlBody });
   const resend = () => resendSend(env, { from: `${senderName} <${env.EMAIL_FROM}>`, to: [recipient], subject, html: htmlBody });
   const mode = String(env.MAIL_DELIVERY_MODE || '').toLowerCase();
@@ -858,7 +859,10 @@ async function sendMail(env, { senderName, recipient, subject, html: htmlBody })
 }
 async function sendAndLog(env, type, subject, items, send) {
   try {
-    const delivery = await send();
+    // The same notification must retain its ID when a GAS response fails after
+    // MailApp has already sent the message.
+    const deliveryId = `${type}:${items.map((item) => type.startsWith('imminent_') ? item.videoId : notificationDeliveryKey(type, item)).sort().join('|')}`;
+    const delivery = await send(deliveryId);
     const result = typeof delivery === 'boolean' ? { sent: delivery, partial: false, providers: {}, errors: [] } : delivery;
     await logNotification(env, type, subject, items, result.sent ? (result.partial ? 'sent_partial' : 'sent') : 'skipped', { providers: result.providers, errors: result.errors });
     return result.sent;
@@ -915,10 +919,10 @@ async function releaseNotificationDeliveries(env, claims) {
   if (!claims.length || !await operationalReady(env)) return;
   await env.DB.batch(claims.filter(({ key }) => key).map(({ key }) => env.DB.prepare("DELETE FROM notification_deliveries WHERE delivery_key=? AND status='pending'").bind(key)));
 }
-async function sendEmail(env, subject, items, senderName, master) {
+async function sendEmail(env, subject, items, senderName, master, deliveryId) {
   const recipient = (await notificationSettings(env)).notification_email || env.NOTIFICATION_EMAIL;
   if (!items.length || !recipient) return false;
-  return sendMail(env, { senderName, recipient, subject, html: notificationHtml(items, master) });
+  return sendMail(env, { senderName, recipient, subject, html: notificationHtml(items, master), deliveryId });
 }
 
 function updateNotificationHistory(history, items) {
@@ -947,8 +951,8 @@ async function notifyChanges(env, items, history, master) {
   let sentNew = !freshToSend.length;
   let sentChanged = !changedToSend.length;
   try {
-    if (freshToSend.length) sentNew = await sendAndLog(env, 'new', newSubject, freshToSend, () => sendEmail(env, newSubject, freshToSend, 'ホロライブ新規配信通知', master));
-    if (changedToSend.length) sentChanged = await sendAndLog(env, 'changed', changedSubject, changedToSend, () => sendEmail(env, changedSubject, changedToSend, 'ホロライブ配信通知', master));
+    if (freshToSend.length) sentNew = await sendAndLog(env, 'new', newSubject, freshToSend, (deliveryId) => sendEmail(env, newSubject, freshToSend, 'ホロライブ新規配信通知', master, deliveryId));
+    if (changedToSend.length) sentChanged = await sendAndLog(env, 'changed', changedSubject, changedToSend, (deliveryId) => sendEmail(env, changedSubject, changedToSend, 'ホロライブ配信通知', master, deliveryId));
   } catch (error) {
     await Promise.all([releaseNotificationDeliveries(env, freshClaims), releaseNotificationDeliveries(env, changedClaims)]);
     throw error;
@@ -969,10 +973,10 @@ function startNotificationHtml(items) {
   });
   return `<div style="font-family:Arial,sans-serif;max-width:560px;margin:auto">${[...grouped.entries()].map(([time, videos]) => `<div style="margin-top:20px;margin-bottom:10px"><span style="background:#00e6ff;border-left:6px solid #00acc1;padding:6px 12px;border-radius:6px;font-size:18px;font-weight:bold;color:#000">🕒 ${html(time)} 開始</span></div><div style="display:flex;flex-wrap:wrap;gap:10px;background:rgba(0,230,255,.05);padding:12px;border-radius:12px">${videos.map((item) => `<a href="${html(item.videoUrl)}" target="_blank" style="text-decoration:none;color:#000;width:48%;min-width:160px"><div style="background:#fff;border-radius:10px;overflow:hidden;border:1px solid #ddd;height:100%"><img src="https://i.ytimg.com/vi/${html(item.videoId)}/mqdefault.jpg" alt="" style="width:100%;display:block"><div style="padding:8px"><div style="font-size:12px;font-weight:bold;line-height:1.3;height:2.6em;overflow:hidden;margin-bottom:4px">${html(item.title)}</div><div style="font-size:11px;color:#666;margin-bottom:4px">${html(item.channelTitle)}</div><div style="font-size:10px;color:#d32f2f;background:#fff0f0;padding:2px 4px;border-radius:4px;display:inline-block">${html(item.passReason || '')}</div></div></div></a>`).join('')}</div>`).join('')}<p style="color:#999;font-size:12px">※このメールは自動送信されています。<span style="float:right;color:#78909c">送信経路: Cloudflare Worker</span></p></div>`;
 }
-async function sendStartEmail(env, subject, items, senderName) {
+async function sendStartEmail(env, subject, items, senderName, deliveryId) {
   const recipient = (await notificationSettings(env)).notification_email || env.NOTIFICATION_EMAIL;
   if (!items.length || !recipient) return false;
-  return sendMail(env, { senderName, recipient, subject, html: startNotificationHtml(items) });
+  return sendMail(env, { senderName, recipient, subject, html: startNotificationHtml(items), deliveryId });
 }
 function imminentReason(item, master) {
   const favoriteIds = new Set(Object.keys(master.favorites));
@@ -1018,7 +1022,7 @@ async function notifyJustBeforeStart(env, notificationTime = Date.now()) {
       if (!await claimStartNotification(env, item.videoId, now)) continue;
       const subject = `⚡【開始済み通知】${item.channelTitle} が配信を開始しました（前倒し/フライング）`;
       try {
-        const sent = await sendAndLog(env, 'imminent_early', subject, [item], () => sendStartEmail(env, subject, [item], 'ホロライブ緊急通知'));
+        const sent = await sendAndLog(env, 'imminent_early', subject, [item], (deliveryId) => sendStartEmail(env, subject, [item], 'ホロライブ緊急通知', deliveryId));
         if (sent) { await completeStartNotification(env, item.videoId, now); next[item.videoId] = { time: now, notified_imminent: true }; }
         else await releaseStartNotification(env, item.videoId);
       } catch (error) { await releaseStartNotification(env, item.videoId); throw error; }
@@ -1028,7 +1032,7 @@ async function notifyJustBeforeStart(env, notificationTime = Date.now()) {
     if (claimedScheduled.length) {
       const subject = `🔔 配信開始: ${claimedScheduled.length}件の注目配信`;
       try {
-        const sent = await sendAndLog(env, 'imminent_scheduled', subject, claimedScheduled, () => sendStartEmail(env, subject, claimedScheduled, '配信開始通知'));
+        const sent = await sendAndLog(env, 'imminent_scheduled', subject, claimedScheduled, (deliveryId) => sendStartEmail(env, subject, claimedScheduled, '配信開始通知', deliveryId));
         if (sent) {
           await Promise.all(claimedScheduled.map((item) => completeStartNotification(env, item.videoId, now)));
           claimedScheduled.forEach((item) => { next[item.videoId] = { time: now, notified_imminent: true }; });
